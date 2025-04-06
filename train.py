@@ -1,5 +1,5 @@
 from tensorflow import keras
-import tensorflow_datasets as tfds
+# import tensorflow_datasets as tfds
 import tensorflow as tf
 import numpy as np
 import pandas as pd
@@ -92,7 +92,7 @@ def train_adversarial(model, train_dataset, valid_dataset, test_dataset, epochs,
     
     keras.utils.set_random_seed(42)
 
-    max_adv_acc = 0
+    # max_adv_acc = 0
     max_epoch = 0
 
     optimizer = keras.optimizers.legacy.Adam(learning_rate=0.001)
