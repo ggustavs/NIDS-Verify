@@ -2,6 +2,7 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import seaborn as sns
 import argparse
+import os
 
 def load_data(file_path):
     """Load the extracted features CSV file."""
@@ -12,7 +13,7 @@ def load_data(file_path):
     except Exception as e:
         raise RuntimeError(f"Failed to load data from {file_path}: {e}") from e
 
-def plot_label_distribution(df):
+def plot_label_distribution(df, output_folder):
     """Plot the distribution of labels."""
     if "Label" not in df.columns:
         print("The 'Label' column is missing in the dataset.")
@@ -26,10 +27,10 @@ def plot_label_distribution(df):
     plt.xticks([0, 1], ["Benign", "Malicious"])
     for container in plt.gca().containers:
         plt.bar_label(container, label_type="edge", fontsize=12)
-    plt.savefig("label_distribution.png")  # Save the plot as a PNG file
-    print("Label distribution plot saved as 'label_distribution.png'.")
+    plt.savefig(os.path.join(output_folder, "label_distribution.png"))  # Save the plot as a PNG file
+    print(f"Label distribution plot saved as '{os.path.join(output_folder, 'label_distribution.png')}'.")
 
-def plot_feature_histogram(df, feature):
+def plot_feature_histogram(df, feature, output_folder):
     """Plot a histogram for a specific feature."""
     if feature not in df.columns:
         print(f"The feature '{feature}' is not in the dataset.")
@@ -39,10 +40,10 @@ def plot_feature_histogram(df, feature):
     plt.title(f"Histogram of {feature}")
     plt.xlabel(feature)
     plt.ylabel("Frequency")
-    plt.savefig(f"{feature}_histogram.png")  # Save the plot as a PNG file
-    print(f"Histogram for feature '{feature}' saved as '{feature}_histogram.png'.")
+    plt.savefig(os.path.join(output_folder, f"{feature}_histogram.png"))  # Save the plot as a PNG file
+    print(f"Histogram for feature '{feature}' saved as '{os.path.join(output_folder, f'{feature}_histogram.png')}'.")
 
-def plot_feature_scatter(df, feature_x, feature_y):
+def plot_feature_scatter(df, feature_x, feature_y, output_folder):
     """Plot a scatter plot for two features."""
     if feature_x not in df.columns or feature_y not in df.columns:
         print(f"One or both features '{feature_x}' and '{feature_y}' are not in the dataset.")
@@ -53,10 +54,10 @@ def plot_feature_scatter(df, feature_x, feature_y):
     plt.xlabel(feature_x)
     plt.ylabel(feature_y)
     plt.legend(title="Label", labels=["Benign", "Malicious"])
-    plt.savefig(f"{feature_x}_vs_{feature_y}_scatter.png")  # Save the plot as a PNG file
-    print(f"Scatter plot for '{feature_x}' vs '{feature_y}' saved as '{feature_x}_vs_{feature_y}_scatter.png'.")
+    plt.savefig(os.path.join(output_folder, f"{feature_x}_vs_{feature_y}_scatter.png"))  # Save the plot as a PNG file
+    print(f"Scatter plot for '{feature_x}' vs '{feature_y}' saved as '{os.path.join(output_folder, f'{feature_x}_vs_{feature_y}_scatter.png')}'.")
 
-def plot_correlation_matrix(df):
+def plot_correlation_matrix(df, output_folder):
     """Plot a correlation matrix for numeric features."""
     numeric_df = df.select_dtypes(include=["float64", "int64"])
     if numeric_df.empty:
@@ -66,8 +67,8 @@ def plot_correlation_matrix(df):
     corr_matrix = numeric_df.corr()
     sns.heatmap(corr_matrix, annot=False, cmap="coolwarm", fmt=".2f")
     plt.title("Correlation Matrix")
-    plt.savefig("correlation_matrix.png")  # Save the plot as a PNG file
-    print("Correlation matrix plot saved as 'correlation_matrix.png'.")
+    plt.savefig(os.path.join(output_folder, "correlation_matrix.png"))  # Save the plot as a PNG file
+    print(f"Correlation matrix plot saved as '{os.path.join(output_folder, 'correlation_matrix.png')}'.")
 
 def main():
     parser = argparse.ArgumentParser(description="Visualize extracted features from PCAP data.")
@@ -75,25 +76,29 @@ def main():
     parser.add_argument("--hist", help="Feature to plot a histogram for", default=None)
     parser.add_argument("--scatter", nargs=2, help="Two features to plot a scatter plot for", default=None)
     parser.add_argument("--correlation", action="store_true", help="Plot the correlation matrix")
+    parser.add_argument("--output-folder", default=".", help="Folder to save the visualizations")
     args = parser.parse_args()
 
     # Load the data
     df = load_data(args.file)
 
+    # Ensure output folder exists
+    os.makedirs(args.output_folder, exist_ok=True)
+
     # Plot label distribution
-    plot_label_distribution(df)
+    plot_label_distribution(df, args.output_folder)
 
     # Plot histogram for a specific feature
     if args.hist:
-        plot_feature_histogram(df, args.hist)
+        plot_feature_histogram(df, args.hist, args.output_folder)
 
     # Plot scatter plot for two features
     if args.scatter:
-        plot_feature_scatter(df, args.scatter[0], args.scatter[1])
+        plot_feature_scatter(df, args.scatter[0], args.scatter[1], args.output_folder)
 
     # Plot correlation matrix
     if args.correlation:
-        plot_correlation_matrix(df)
+        plot_correlation_matrix(df, args.output_folder)
 
 if __name__ == "__main__":
     main()
