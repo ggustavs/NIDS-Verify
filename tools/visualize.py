@@ -76,7 +76,7 @@ def main():
     parser.add_argument("--hist", help="Feature to plot a histogram for", default=None)
     parser.add_argument("--scatter", nargs=2, help="Two features to plot a scatter plot for", default=None)
     parser.add_argument("--correlation", action="store_true", help="Plot the correlation matrix")
-    parser.add_argument("--output-folder", default=".", help="Folder to save the visualizations")
+    parser.add_argument("--output-folder", default="misc", help="Folder to save the visualizations")
     args = parser.parse_args()
 
     # Load the data
