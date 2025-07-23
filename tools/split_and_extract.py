@@ -15,8 +15,8 @@ def split_pcap(input_pcap, output_dir, size_limit="1000m"):
 def process_splits(output_dir, labels_file, window_size, verbose):
     """Run extract_features.py on all split files and collect the output."""
     split_files = sorted(
-        [f for f in os.listdir(output_dir) if f.startswith("split_") and not f.endswith("_features_with_labels.csv")],
-        key=lambda x: (0 if x == "split_" else int(x.split("_")[-1]) if x.split("_")[-1].isdigit() else float("inf"))
+        [f for f in os.listdir(output_dir) if f.startswith("big_split_") and not f.endswith("_features_with_labels.csv")],
+        key=lambda x: (0 if x == "big_split_" else int(x.split("_")[-1]) if x.split("_")[-1].isdigit() else float("inf"))
     )
     combined_df = pd.DataFrame()
 
@@ -69,7 +69,7 @@ def main():
     args = parser.parse_args()
 
     # Step 1: Split the PCAP file
-    split_pcap(args.input_pcap, args.output_dir, args.size_limit)
+    # split_pcap(args.input_pcap, args.output_dir, args.size_limit)
 
     # Step 2: Process each split and combine results
     combined_df = process_splits(args.output_dir, args.labels, args.window, args.verbose)

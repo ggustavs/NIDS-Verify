@@ -35,8 +35,8 @@ import argparse
 import os
 
 # Global configuration variables
-CSV_PCAP_OFFSET_HOURS = 3  # CSV timestamps are this many hours behind PCAP timestamps
-TIME_BUFFER_HOURS = 1      # Buffer time in hours for timestamp matching
+CSV_PCAP_OFFSET_HOURS = 0  # CSV timestamps are this many hours behind PCAP timestamps
+TIME_BUFFER_HOURS = 0.5      # Buffer time in hours for timestamp matching
 
 class FeatureExtractor:
     def __init__(self, pcap_file, window_size=10, labels_file=None, verbose=True):
@@ -117,13 +117,27 @@ class FeatureExtractor:
         Also applies a configurable offset to account for timezone differences between CSV and PCAP.
         """
         
-        # Try to parse the timestamp - try both M/D/Y and D/M/Y formats
+        # Try to parse the timestamp - try multiple formats
         dt_original = None
-        try:
-            dt_original = pd.to_datetime(timestamp_str, format='%d/%m/%Y %H:%M')
-        except:
+        
+        # List of formats to try, in order of preference
+        formats_to_try = [
+            '%Y-%m-%d %H:%M:%S.%f',  # 2017-07-05 11:42:42.790920
+            '%Y-%m-%d %H:%M:%S',     # 2017-07-05 11:42:42
+            '%d/%m/%Y %H:%M',        # Original format
+            '%m/%d/%Y %H:%M',        # Alternative date format
+        ]
+        
+        for fmt in formats_to_try:
             try:
-                # Fallback: let pandas auto-detect
+                dt_original = pd.to_datetime(timestamp_str, format=fmt)
+                break
+            except:
+                continue
+        
+        # If all specific formats fail, try pandas auto-detection
+        if dt_original is None:
+            try:
                 dt_original = pd.to_datetime(timestamp_str)
             except:
                 if self.verbose:
@@ -133,20 +147,16 @@ class FeatureExtractor:
         hour = dt_original.hour
         
         # If hour is <= 12, create both AM and PM possibilities
-        if hour <= 12:
+        if False:  # hour <= 12 Changed to test something
             # AM possibility
             if hour == 12:
                 # 12:XX AM = midnight (00:XX)
                 am_dt = dt_original.replace(hour=0)
-            else:
-                # Regular AM hour (keep as is)
-                am_dt = dt_original
-            
-            # PM possibility  
-            if hour == 12:
                 # 12:XX PM = noon (keep 12:XX)
                 pm_dt = dt_original
             else:
+                # Regular AM hour (keep as is)
+                am_dt = dt_original
                 # Regular PM hour (add 12 hours)
                 pm_dt = dt_original + pd.Timedelta(hours=12)
             
@@ -267,9 +277,10 @@ class FeatureExtractor:
         filtered_rows = []
         
         # Process CSV rows with progress bar
-        for _, row in tqdm(labels_df.iterrows(), 
-                          desc="Filtering CSV rows by time range", 
-                          unit="row"):
+        for _, row in tqdm(labels_df.iterrows(),
+                            total=len(labels_df),
+                            desc="Filtering CSV rows by time range", 
+                            unit="row"):
             timestamp_str = str(row['Timestamp'])
             possible_timestamps = self._parse_timestamp_with_ambiguity(timestamp_str)
             
@@ -329,18 +340,18 @@ class FeatureExtractor:
                 continue
                 
             src_ip, dst_ip, src_port, dst_port, proto = flow_key[:5]
-            matching_rows = filtered_labels_df[(filtered_labels_df['Source IP'] == src_ip) &
-                                             (filtered_labels_df['Destination IP'] == dst_ip) &
-                                             (filtered_labels_df['Source Port'] == src_port) &
-                                             (filtered_labels_df['Destination Port'] == dst_port) &
+            matching_rows = filtered_labels_df[(filtered_labels_df['Src IP'] == src_ip) &
+                                             (filtered_labels_df['Dst IP'] == dst_ip) &
+                                             (filtered_labels_df['Src Port'] == src_port) &
+                                             (filtered_labels_df['Dst Port'] == dst_port) &
                                              (filtered_labels_df['Protocol'] == proto)]
             
             if not matching_rows.empty:
                 for _, row in matching_rows.iterrows():
                     timestamp_str = str(row['Timestamp'])
                     label = row['Label']
-                    expected_fwd_packets = int(row['Total Fwd Packets'])
-                    expected_bwd_packets = int(row['Total Backward Packets'])
+                    expected_fwd_packets = int(row['Total Fwd Packet'])
+                    expected_bwd_packets = int(row['Total Bwd packets'])
                     expected_total_packets = expected_fwd_packets + expected_bwd_packets
                     flow_duration = float(row['Flow Duration']) if 'Flow Duration' in row else None
                     
@@ -415,7 +426,7 @@ class FeatureExtractor:
             data_rows.append(row)
             
         # Create column names
-        columns = ["Source_IP", "Destination_IP", "Source_Port", "Destination_Port", "Protocol", 
+        columns = ["Src_IP", "Dst_IP", "Src_Port", "Dst_Port", "Protocol", 
                   "Flow_Duration", "Flow_IAT_Mean", "Flow_IAT_Std", "Max_Pkt_Size"]
         for i in range(1, self.window_size + 1):
             columns.extend([f"Pkt_Size{i}", f"Pkt_Flags{i}", f"Pkt_IAT{i}", f"Pkt_Direction{i}"])
@@ -434,7 +445,14 @@ class FeatureExtractor:
 
     def save_output(self):
         output_file = os.path.splitext(self.pcap_file)[0] + "_features_with_labels.csv" if self.labels_file else os.path.splitext(self.pcap_file)[0] + "_features.csv"
-        output_df = self.df_flows.drop(columns=["Flow_Duration", "Flow_IAT_Mean", "Flow_IAT_Std", "Max_Pkt_Size"], errors='ignore')
+        output_df = self.df_flows.drop(columns=["Flow_IAT_Mean", "Flow_IAT_Std", "Max_Pkt_Size"], errors='ignore')
+        output_df = output_df[["Flow_Duration", "Protocol"] + 
+            [f"Pkt_Direction{i}" for i in range(1, self.window_size + 1)] +
+            [f"Pkt_Flags{i}" for i in range(1, self.window_size + 1)] +
+            [f"Pkt_IAT{i}" for i in range(1, self.window_size + 1)] +
+            [f"Pkt_Size{i}" for i in range(1, self.window_size + 1)] +
+            ["Label"] 
+            ] # Reorder columns to match specification
         output_df.to_csv(output_file, index=False)
         if self.verbose:
             print(f"Feature extraction completed. Saved to {output_file}")
