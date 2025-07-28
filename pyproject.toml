@@ -19,6 +19,9 @@ dependencies = [
     "tf2onnx>=1.15.0",
     "onnx>=1.14.0",
     "psutil>=5.9.0",
+    "jupyter>=1.1.1",
+    "tqdm>=4.67.1",
+    "scapy>=2.6.1",
 ]
 
 [project.optional-dependencies]
@@ -36,6 +39,7 @@ dev = [
 [project.scripts]
 nids-train = "src.main:main"
 nids-models = "src.models.manage:main"
+nids-preprocess = "src.preprocess_cli:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src"]
@@ -84,5 +88,4 @@ addopts = [
 
 [dependency-groups]
 dev = [
-    "scapy>=2.6.1",
 ]

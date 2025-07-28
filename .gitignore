@@ -5,3 +5,5 @@ mlruns
 models
 logs
 __pycache__
+*.py[cod]
+*$py.class

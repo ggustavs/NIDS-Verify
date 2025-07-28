@@ -8,11 +8,9 @@ A Network Intrusion Detection System (NIDS) that combines adversarial training w
 ## Features
 
 - **Vehicle-lang Integration**: Formal verification specifications for attack patterns
-- **Human-in-the-Loop Tools**: Interactive hyperrectangle generation for attack boundaries
 - **Adversarial Training**: PGD-based training with hyperrectangle constraints
 - **Experiment Tracking**: MLflow integration for model management and monitoring
 - **Unified Training**: Single interface for base and adversarial training
-- **Format Conversion**: Automatic translation between verification regions and training bounds
 
 ## Getting Started
 
@@ -47,11 +45,6 @@ Register pre-trained models:
 uv run nids-models register --dir models/tf/DoS2
 ```
 
-Use the interactive attack generation tool:
-```bash
-jupyter lab nb/vehicle_hyperrectangle_generator.ipynb
-```
-
 Manage models:
 ```bash
 # List registered models
@@ -66,8 +59,8 @@ uv run nids-models compare
 # Find best model
 uv run nids-models best --metric final_val_accuracy
 
-# Promote a model to production
-uv run nids-models promote nids_small_adversarial 2
+# Load a model for testing
+uv run nids-models load nids_small_adversarial --version 2
 ```
 
 ## Project Structure
@@ -98,35 +91,6 @@ NIDS-Verify-Personal/
 ├── mlruns/                          # MLflow experiment tracking
 ├── data/                            # Datasets (CIC-IDS-2018, DetGen, etc.)
 └── logs/                            # Training and gradient logs
-```
-
-## Human-in-the-Loop Workflow
-
-### 1. Interactive Attack Boundary Creation
-The Jupyter notebook provides an interactive interface for creating attack boundaries:
-
-```python
-from src.tools.vehicle_hyperrectangles import VehicleHyperrectangleGenerator
-
-generator = VehicleHyperrectangleGenerator("data/preprocessed-dos-train.csv")
-# Interactive widgets allow refinement of boundaries
-# Statistical analysis provides initial suggestions
-```
-
-### 2. Dual Export System
-The tool exports boundaries in two formats:
-- **Attack Regions**: For formal verification with Vehicle-lang
-- **Perturbation Bounds**: For adversarial training with PGD
-
-```python
-# Export for adversarial training
-perturbation_bounds = generator.export_for_adversarial_training()
-
-# Export for formal verification
-attack_regions = generator.export_attack_regions()
-
-# Generate Vehicle-lang specification
-vehicle_spec = generator.generate_vehicle_specification()
 ```
 
 ## Model Architectures
@@ -230,7 +194,3 @@ attack.num_steps = 10
 2. Create a feature branch
 3. Make your changes
 4. Submit a pull request
-
-## License
-
-This project is licensed under the MIT License.
