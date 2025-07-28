@@ -90,14 +90,14 @@ def register_models_from_directory(models_dir: str, pattern: str = "*.keras") ->
     return registered_count
 
 
-def evaluate_model_command(model_name: str, version: str = None, stage: str = "None",
+def evaluate_model_command(model_name: str, version: str = None,
                           report_dir: str = None, show_plots: bool = False):
     """Evaluate a model and optionally generate reports"""
     evaluator = ModelEvaluator()
     
     try:
         print(f"🔬 Evaluating model: {model_name}")
-        eval_result = evaluator.evaluate_model(model_name, stage, version)
+        eval_result = evaluator.evaluate_model(model_name, version)
         
         print(f"✅ Model: {eval_result['model_name']}")
         print(f"📊 Test Accuracy: {eval_result['test_accuracy']:.4f}")
@@ -133,7 +133,7 @@ def evaluate_model_command(model_name: str, version: str = None, stage: str = "N
         # Generate full report if requested
         if report_dir:
             report_path = evaluator.generate_evaluation_report(
-                model_name, stage, version, report_dir
+                model_name, version, report_dir
             )
             print(f"📄 Full report generated: {report_path}")
         
@@ -152,7 +152,7 @@ def main():
     subparsers = parser.add_subparsers(dest='command', help='Available commands')
     
     # List models
-    list_parser = subparsers.add_parser('list', help='List all registered models')
+    subparsers.add_parser('list', help='List all registered models')
     
     # Model info
     info_parser = subparsers.add_parser('info', help='Get detailed model information')
@@ -163,25 +163,15 @@ def main():
     compare_parser.add_argument('--models', nargs='+', help='Model names to compare (default: all)')
     compare_parser.add_argument('--output', help='Output file for comparison report')
     
-    # Promote model
-    promote_parser = subparsers.add_parser('promote', help='Promote model to production')
-    promote_parser.add_argument('model_name', help='Name of the model')
-    promote_parser.add_argument('version', help='Version to promote')
-    promote_parser.add_argument('--stage', default='Production', 
-                               choices=['Staging', 'Production', 'Archived'],
-                               help='Stage to promote to')
-    
     # Get best model
     best_parser = subparsers.add_parser('best', help='Find best performing model')
     best_parser.add_argument('--metric', default='final_val_accuracy',
                             help='Metric to optimize for')
-    best_parser.add_argument('--stage', help='Filter by stage')
     
     # Load model for testing
     load_parser = subparsers.add_parser('load', help='Load model for testing')
     load_parser.add_argument('model_name', help='Name of the model')
-    load_parser.add_argument('--version', help='Specific version (default: latest production)')
-    load_parser.add_argument('--stage', default='Production', help='Stage to load from')
+    load_parser.add_argument('--version', help='Specific version (default: latest)')
     
     # Delete model version
     delete_parser = subparsers.add_parser('delete', help='Delete model version')
@@ -201,7 +191,6 @@ def main():
     evaluate_parser = subparsers.add_parser('evaluate', help='Evaluate a registered model')
     evaluate_parser.add_argument('model_name', help='Name of the model to evaluate')
     evaluate_parser.add_argument('--version', help='Specific version to evaluate')
-    evaluate_parser.add_argument('--stage', default='None', help='Stage to evaluate (default: None)')
     evaluate_parser.add_argument('--report', help='Generate full report and save to directory')
     evaluate_parser.add_argument('--plots', action='store_true', help='Show plots during evaluation')
     
@@ -233,7 +222,7 @@ def main():
                 print(f"Tags: {info.get('tags', {})}")
                 print("\nVersions:")
                 for version in info['versions']:
-                    print(f"  Version {version['version']} ({version['stage']})")
+                    print(f"  Version {version['version']}")
                     print(f"    Created: {version['creation_timestamp']}")
                     print(f"    Run ID: {version['run_id']}")
                     if version['description']:
@@ -250,22 +239,18 @@ def main():
             else:
                 print(report)
         
-        elif args.command == 'promote':
-            registry.promote_model(args.model_name, args.version, args.stage)
-        
         elif args.command == 'best':
-            best = registry.get_best_model(args.metric, args.stage)
+            best = registry.get_best_model(args.metric)
             if best:
                 print(f"Best model by {args.metric}:")
                 print(f"  Name: {best['name']}")
                 print(f"  Version: {best['version']}")
-                print(f"  Stage: {best['stage']}")
                 print(f"  {args.metric}: {best['metric_value']:.4f}")
             else:
                 print("No models found.")
         
         elif args.command == 'load':
-            model = registry.load_model(args.model_name, args.stage, args.version)
+            model = registry.load_model(args.model_name, args.version)
             if model:
                 print(f"Model loaded successfully!")
                 print(f"Input shape: {model.input.shape}")
@@ -286,7 +271,7 @@ def main():
             print(f"Successfully registered {success_count} models from {args.dir}")
             
         elif args.command == 'evaluate':
-            evaluate_model_command(args.model_name, args.version, args.stage, 
+            evaluate_model_command(args.model_name, args.version, 
                                  args.report, args.plots)
             
     except KeyboardInterrupt:

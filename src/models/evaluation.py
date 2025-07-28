@@ -10,7 +10,7 @@ from sklearn.metrics import classification_report, confusion_matrix, roc_auc_sco
 import matplotlib.pyplot as plt
 import seaborn as sns
 from src.models.registry import NIDSModelRegistry
-from src.data.loader import load_data
+from src.data.loader import DataLoader
 from src.utils.logging import get_logger
 
 logger = get_logger(__name__)
@@ -22,28 +22,27 @@ class ModelEvaluator:
     def __init__(self):
         self.registry = NIDSModelRegistry()
         
-    def evaluate_model(self, model_name: str, stage: str = "Production", 
-                      version: str = None) -> Dict[str, Any]:
+    def evaluate_model(self, model_name: str, version: str = None) -> Dict[str, Any]:
         """
         Evaluate a registered model on test data
         
         Args:
             model_name: Name of registered model
-            stage: Model stage to evaluate (Production, Staging, etc.)
-            version: Specific version (overrides stage)
+            version: Specific version (default: latest)
             
         Returns:
             Dictionary containing evaluation metrics
         """
         try:
             # Load model from registry
-            model = self.registry.load_model(model_name, stage, version)
+            model = self.registry.load_model(model_name, version)
             if model is None:
                 raise ValueError(f"Could not load model {model_name}")
             
             # Load test data
-            _, _, test_dataset, feature_names = load_data()
-            
+            data_loader = DataLoader()
+            _, _, test_dataset, _ = data_loader.load_data()
+
             # Collect all test data
             test_X, test_y = [], []
             for x_batch, y_batch in test_dataset:
@@ -81,7 +80,6 @@ class ModelEvaluator:
             
             results = {
                 'model_name': model_name,
-                'stage': stage,
                 'version': version,
                 'test_accuracy': accuracy,
                 'auc_score': auc_score,
@@ -109,7 +107,7 @@ class ModelEvaluator:
         Compare multiple models on test data
         
         Args:
-            model_specs: List of dicts with 'name', 'stage', 'version' keys
+            model_specs: List of dicts with 'name' and optionally 'version' keys
             
         Returns:
             DataFrame with comparison results
@@ -120,13 +118,11 @@ class ModelEvaluator:
             try:
                 eval_result = self.evaluate_model(
                     spec['name'], 
-                    spec.get('stage', 'Production'),
                     spec.get('version')
                 )
                 
                 results.append({
                     'model_name': eval_result['model_name'],
-                    'stage': eval_result['stage'],
                     'version': eval_result['version'],
                     'test_accuracy': eval_result['test_accuracy'],
                     'auc_score': eval_result['auc_score'],
@@ -198,15 +194,14 @@ class ModelEvaluator:
         
         plt.show()
     
-    def generate_evaluation_report(self, model_name: str, stage: str = "Production",
-                                 version: str = None, save_dir: str = "./reports") -> str:
+    def generate_evaluation_report(self, model_name: str, version: str = None, 
+                                 save_dir: str = "./reports") -> str:
         """
         Generate comprehensive evaluation report
         
         Args:
             model_name: Name of registered model
-            stage: Model stage to evaluate
-            version: Specific version
+            version: Specific version (default: latest)
             save_dir: Directory to save report and plots
             
         Returns:
@@ -219,13 +214,13 @@ class ModelEvaluator:
         os.makedirs(save_dir, exist_ok=True)
         
         # Evaluate model
-        eval_result = self.evaluate_model(model_name, stage, version)
+        eval_result = self.evaluate_model(model_name, version)
         
         # Generate timestamp
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         
         # Create report filename
-        report_name = f"{model_name}_{stage}_{timestamp}"
+        report_name = f"{model_name}_{timestamp}"
         if version:
             report_name = f"{model_name}_v{version}_{timestamp}"
         
@@ -244,7 +239,6 @@ class ModelEvaluator:
 
 ## Model Information
 - **Name**: {eval_result['model_name']}
-- **Stage**: {eval_result['stage']}
 - **Version**: {eval_result.get('version', 'Latest')}
 - **Evaluation Date**: {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
 
@@ -290,8 +284,8 @@ The model achieved {eval_result['test_accuracy']:.2%} accuracy on the test set. 
         return report_path
 
 
-def evaluate_production_models() -> pd.DataFrame:
-    """Evaluate all production models and return comparison"""
+def evaluate_all_models() -> pd.DataFrame:
+    """Evaluate all registered models and return comparison"""
     evaluator = ModelEvaluator()
     registry = NIDSModelRegistry()
     
@@ -299,20 +293,22 @@ def evaluate_production_models() -> pd.DataFrame:
     model_specs = []
     
     for model_name in models:
-        # Get production version
+        # Get latest version of each model
         try:
-            versions = registry.client.get_latest_versions(model_name, stages=["Production"])
-            if versions:
+            model_info = registry.get_model_info(model_name)
+            if model_info and model_info.get('versions'):
+                # Get the latest version
+                latest_version = max(model_info['versions'], key=lambda v: int(v['version']))
                 model_specs.append({
                     'name': model_name,
-                    'stage': 'Production',
-                    'version': versions[0].version
+                    'version': latest_version['version']
                 })
         except Exception:
-            continue
+            # Fall back to adding without version (will use latest)
+            model_specs.append({'name': model_name})
     
     if not model_specs:
-        logger.warning("No production models found")
+        logger.warning("No models found")
         return pd.DataFrame()
     
     return evaluator.compare_models(model_specs)

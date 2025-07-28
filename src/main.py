@@ -13,9 +13,9 @@ import tensorflow as tf
 from src.config import config
 from src.utils.logging import setup_logging, get_logger
 from src.utils.performance import configure_tensorflow_performance, log_system_info
-from src.data import load_data
+from src.data import DataLoader
 from src.models import create_model
-from src.training import train_adversarial, train_base, save_model
+from src.training import train_adversarial, train_base
 
 
 def parse_arguments() -> argparse.Namespace:
@@ -152,7 +152,8 @@ def main() -> int:
         
         # Load data
         logger.info("Loading data...")
-        train_dataset, val_dataset, test_dataset, feature_names = load_data(dataset=args.dataset)
+        data_loader = DataLoader(data_dir=config.data.data_dir)
+        train_dataset, val_dataset, test_dataset, feature_names = data_loader.load_data(dataset=args.dataset)
         input_size = len(feature_names)
         logger.info(f"Loaded data with {input_size} features")
         

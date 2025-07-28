@@ -31,7 +31,7 @@ class NIDSModelRegistry:
         """Get detailed information about a registered model"""
         try:
             model = self.client.get_registered_model(model_name)
-            versions = self.client.get_latest_versions(model_name, stages=["None", "Staging", "Production"])
+            versions = self.client.get_latest_versions(model_name)
             
             return {
                 "name": model.name,
@@ -42,7 +42,6 @@ class NIDSModelRegistry:
                 "versions": [
                     {
                         "version": v.version,
-                        "stage": v.current_stage,
                         "description": v.description,
                         "creation_timestamp": v.creation_timestamp,
                         "tags": v.tags,
@@ -60,11 +59,8 @@ class NIDSModelRegistry:
         
         for model_name in model_names:
             try:
-                # Get latest production or staging version
-                versions = self.client.get_latest_versions(
-                    model_name, 
-                    stages=["Production", "Staging", "None"]
-                )
+                # Get latest version
+                versions = self.client.get_latest_versions(model_name)
                 
                 if not versions:
                     continue
@@ -79,7 +75,6 @@ class NIDSModelRegistry:
                 comparison_data.append({
                     "model_name": model_name,
                     "version": version.version,
-                    "stage": version.current_stage,
                     "final_train_accuracy": metrics.get("final_train_accuracy", None),
                     "final_val_accuracy": metrics.get("final_val_accuracy", None),
                     "final_train_loss": metrics.get("final_train_loss", None),
@@ -97,32 +92,21 @@ class NIDSModelRegistry:
         
         return pd.DataFrame(comparison_data)
     
-    def promote_model(self, model_name: str, version: str, stage: str = "Production"):
-        """Promote model to production stage"""
-        try:
-            # Archive current production model if exists
-            if stage == "Production":
-                current_prod = self.client.get_latest_versions(model_name, stages=["Production"])
-                for model in current_prod:
-                    logger.transition_model_stage(model_name, model.version, "Archived")
-            
-            # Promote new model
-            logger.transition_model_stage(model_name, version, stage)
-            logger.info(f"Promoted {model_name} v{version} to {stage}")
-            
-        except Exception as e:
-            logger.error(f"Failed to promote model: {e}")
-    
-    def load_model(self, model_name: str, stage: str = "Production", version: str = None):
+    def load_model(self, model_name: str, version: str = None):
         """Load model from registry"""
         try:
             if version:
                 model_uri = f"models:/{model_name}/{version}"
             else:
-                model_uri = f"models:/{model_name}/{stage}"
+                # Get latest version
+                versions = self.client.get_latest_versions(model_name)
+                if not versions:
+                    raise ValueError(f"No versions found for model {model_name}")
+                model_uri = f"models:/{model_name}/{versions[0].version}"
                 
             model = mlflow.tensorflow.load_model(model_uri)
-            logger.info(f"Loaded model {model_name} from {stage if not version else f'version {version}'}")
+            version_str = f"version {version}" if version else f"latest version ({versions[0].version})"
+            logger.info(f"Loaded model {model_name} from {version_str}")
             return model
             
         except Exception as e:
@@ -201,8 +185,7 @@ class NIDSModelRegistry:
                 logger.error(f"Failed to register model {model_name}: {e}")
                 raise
     
-    def get_best_model(self, metric: str = "final_val_accuracy", 
-                      stage: str = None) -> Optional[Dict[str, Any]]:
+    def get_best_model(self, metric: str = "final_val_accuracy") -> Optional[Dict[str, Any]]:
         """Get the best performing model based on a specific metric"""
         try:
             models = self.list_models()
@@ -210,10 +193,7 @@ class NIDSModelRegistry:
             best_metric = float('-inf') if 'accuracy' in metric else float('inf')
             
             for model_name in models:
-                if stage:
-                    versions = self.client.get_latest_versions(model_name, stages=[stage])
-                else:
-                    versions = self.client.get_latest_versions(model_name)
+                versions = self.client.get_latest_versions(model_name)
                 
                 for version in versions:
                     try:
@@ -231,7 +211,6 @@ class NIDSModelRegistry:
                                 best_model = {
                                     "name": model_name,
                                     "version": version.version,
-                                    "stage": version.current_stage,
                                     "metric_value": metric_value,
                                     "run_id": version.run_id
                                 }
@@ -276,7 +255,6 @@ def create_model_comparison_report(models: List[str] = None) -> str:
         report += f"## Best Overall Model\n\n"
         report += f"- **Model**: {best_overall['model_name']}\n"
         report += f"- **Version**: {best_overall['version']}\n"
-        report += f"- **Stage**: {best_overall['stage']}\n"
         report += f"- **Validation Accuracy**: {best_overall['final_val_accuracy']:.4f}\n"
         report += f"- **Training Type**: {best_overall['training_type']}\n"
         report += f"- **Architecture**: {best_overall['model_type']}\n\n"

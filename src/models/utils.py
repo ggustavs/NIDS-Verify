@@ -119,13 +119,6 @@ def _register_tf_model(model: tf.keras.Model, model_name: str, save_path: str):
         
         if model_version:
             logger.info(f"Model registered successfully: nids_{model_name} v{model_version.version}")
-            
-            # Automatically transition to Staging for review
-            logger.transition_model_stage(
-                model_name=f"nids_{model_name}",
-                version=str(model_version.version),
-                stage="Staging"
-            )
         else:
             logger.warning("Model registration returned None")
             
