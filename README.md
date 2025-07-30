@@ -128,7 +128,7 @@ The system defines formal specifications for attack patterns using Vehicle-lang:
 // Example: DoS attack pattern
 property dos_attack_robustness(input: Vector, output: Vector) -> Bool = {
     forall attack_region in dos_hyperrectangles.
-        input in attack_region => 
+        input in attack_region =>
         model_prediction(input) == ATTACK_LABEL
 }
 ```
@@ -145,8 +145,8 @@ The PGD implementation projects adversarial examples to valid hyperrectangles:
 ```python
 trainer = NIDSTrainer(model, config)
 history = trainer.train(
-    data, val_data, 
-    training_type="adversarial", 
+    data, val_data,
+    training_type="adversarial",
     attack_bounds=perturbation_bounds
 )
 ```
@@ -177,7 +177,7 @@ Centralized configuration in `src/config.py`:
 model.model_type = "small"
 model.dropout_rate = 0.3
 
-# Training configuration  
+# Training configuration
 training.learning_rate = 0.001
 training.batch_size = 32
 training.epochs = 50

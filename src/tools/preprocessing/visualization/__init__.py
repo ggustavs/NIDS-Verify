@@ -9,4 +9,4 @@ Components:
 
 from .plotter import DataVisualizer
 
-__all__ = ['DataVisualizer']
+__all__ = ["DataVisualizer"]

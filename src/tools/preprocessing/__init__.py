@@ -9,7 +9,7 @@ This package contains utilities for:
 
 Organization:
 - pcap_processing/: PCAP file processing and feature extraction
-- visualization/: Data analysis and plotting utilities  
+- visualization/: Data analysis and plotting utilities
 - verification/: Vehicle-lang integration and formal verification tools
 """
 
@@ -20,13 +20,11 @@ __author__ = "NIDS-Verify Research Project"
 try:
     from .pcap_processing.extractor import FeatureExtractor
     from .visualization.plotter import DataVisualizer
-    
-    __all__ = [
-        'FeatureExtractor',
-        'DataVisualizer'
-    ]
+
+    __all__ = ["FeatureExtractor", "DataVisualizer"]
 except ImportError as e:
     # Handle missing dependencies gracefully
     import logging
+
     logging.warning(f"Some tools may not be available due to missing dependencies: {e}")
     __all__ = []

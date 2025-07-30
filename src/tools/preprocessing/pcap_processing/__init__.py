@@ -8,7 +8,7 @@ Components:
 - batch_processor: Large PCAP file splitting and batch processing
 """
 
-from .extractor import FeatureExtractor
 from .batch_processor import BatchPcapProcessor
+from .extractor import FeatureExtractor
 
-__all__ = ['FeatureExtractor', 'BatchPcapProcessor']
+__all__ = ["FeatureExtractor", "BatchPcapProcessor"]

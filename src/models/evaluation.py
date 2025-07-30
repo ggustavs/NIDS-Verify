@@ -18,18 +18,18 @@ logger = get_logger(__name__)
 
 class ModelEvaluator:
     """Evaluate registered NIDS models"""
-    
+
     def __init__(self):
         self.registry = NIDSModelRegistry()
-        
+
     def evaluate_model(self, model_name: str, version: str = None) -> Dict[str, Any]:
         """
         Evaluate a registered model on test data
-        
+
         Args:
             model_name: Name of registered model
             version: Specific version (default: latest)
-            
+
         Returns:
             Dictionary containing evaluation metrics
         """
@@ -38,7 +38,7 @@ class ModelEvaluator:
             model = self.registry.load_model(model_name, version)
             if model is None:
                 raise ValueError(f"Could not load model {model_name}")
-            
+
             # Load test data
             data_loader = DataLoader()
             _, _, test_dataset, _ = data_loader.load_data()
@@ -48,18 +48,18 @@ class ModelEvaluator:
             for x_batch, y_batch in test_dataset:
                 test_X.append(x_batch.numpy())
                 test_y.append(y_batch.numpy())
-            
+
             test_X = np.vstack(test_X)
             test_y = np.hstack(test_y)
-            
+
             # Make predictions
             predictions = model.predict(test_X, verbose=0)
             predicted_probs = tf.nn.softmax(predictions).numpy()
             predicted_classes = np.argmax(predicted_probs, axis=1)
-            
+
             # Calculate metrics
             accuracy = np.mean(predicted_classes == test_y)
-            
+
             # For binary classification
             if predicted_probs.shape[1] == 2:
                 auc_score = roc_auc_score(test_y, predicted_probs[:, 1])
@@ -67,17 +67,17 @@ class ModelEvaluator:
             else:
                 auc_score = None
                 fpr, tpr = None, None
-            
+
             # Classification report
             class_report = classification_report(
-                test_y, predicted_classes, 
-                target_names=['Benign', 'Attack'], 
+                test_y, predicted_classes,
+                target_names=['Benign', 'Attack'],
                 output_dict=True
             )
-            
+
             # Confusion matrix
             conf_matrix = confusion_matrix(test_y, predicted_classes)
-            
+
             results = {
                 'model_name': model_name,
                 'version': version,
@@ -90,37 +90,37 @@ class ModelEvaluator:
                 'probabilities': predicted_probs,
                 'test_size': len(test_y)
             }
-            
+
             logger.info(f"Evaluation completed for {model_name}")
             logger.info(f"Test Accuracy: {accuracy:.4f}")
             if auc_score:
                 logger.info(f"AUC Score: {auc_score:.4f}")
-            
+
             return results
-            
+
         except Exception as e:
             logger.error(f"Evaluation failed for {model_name}: {e}")
             raise
-    
+
     def compare_models(self, model_specs: list) -> pd.DataFrame:
         """
         Compare multiple models on test data
-        
+
         Args:
             model_specs: List of dicts with 'name' and optionally 'version' keys
-            
+
         Returns:
             DataFrame with comparison results
         """
         results = []
-        
+
         for spec in model_specs:
             try:
                 eval_result = self.evaluate_model(
-                    spec['name'], 
+                    spec['name'],
                     spec.get('version')
                 )
-                
+
                 results.append({
                     'model_name': eval_result['model_name'],
                     'version': eval_result['version'],
@@ -134,52 +134,52 @@ class ModelEvaluator:
                     'f1_attack': eval_result['classification_report']['1']['f1-score'],
                     'test_size': eval_result['test_size']
                 })
-                
+
             except Exception as e:
                 logger.warning(f"Failed to evaluate {spec['name']}: {e}")
                 continue
-        
+
         return pd.DataFrame(results)
-    
+
     def plot_confusion_matrix(self, eval_result: Dict[str, Any], save_path: str = None):
         """Plot confusion matrix for evaluation result"""
         plt.figure(figsize=(8, 6))
-        
+
         conf_matrix = eval_result['confusion_matrix']
         sns.heatmap(
-            conf_matrix, 
-            annot=True, 
+            conf_matrix,
+            annot=True,
             fmt='d',
             cmap='Blues',
             xticklabels=['Benign', 'Attack'],
             yticklabels=['Benign', 'Attack']
         )
-        
+
         plt.title(f"Confusion Matrix - {eval_result['model_name']}")
         plt.ylabel('True Label')
         plt.xlabel('Predicted Label')
-        
+
         if save_path:
             plt.savefig(save_path, dpi=300, bbox_inches='tight')
             logger.info(f"Confusion matrix saved to {save_path}")
-        
+
         plt.show()
-    
+
     def plot_roc_curve(self, eval_result: Dict[str, Any], save_path: str = None):
         """Plot ROC curve for evaluation result"""
         if eval_result['roc_curve'] is None:
             logger.warning("ROC curve data not available")
             return
-        
+
         plt.figure(figsize=(8, 6))
-        
+
         fpr = eval_result['roc_curve']['fpr']
         tpr = eval_result['roc_curve']['tpr']
         auc = eval_result['auc_score']
-        
+
         plt.plot(fpr, tpr, linewidth=2, label=f"ROC curve (AUC = {auc:.3f})")
         plt.plot([0, 1], [0, 1], 'k--', linewidth=1, label='Random')
-        
+
         plt.xlim([0.0, 1.0])
         plt.ylim([0.0, 1.05])
         plt.xlabel('False Positive Rate')
@@ -187,53 +187,53 @@ class ModelEvaluator:
         plt.title(f"ROC Curve - {eval_result['model_name']}")
         plt.legend(loc="lower right")
         plt.grid(True, alpha=0.3)
-        
+
         if save_path:
             plt.savefig(save_path, dpi=300, bbox_inches='tight')
             logger.info(f"ROC curve saved to {save_path}")
-        
+
         plt.show()
-    
-    def generate_evaluation_report(self, model_name: str, version: str = None, 
+
+    def generate_evaluation_report(self, model_name: str, version: str = None,
                                  save_dir: str = "./reports") -> str:
         """
         Generate comprehensive evaluation report
-        
+
         Args:
             model_name: Name of registered model
             version: Specific version (default: latest)
             save_dir: Directory to save report and plots
-            
+
         Returns:
             Path to generated report
         """
         import os
         from datetime import datetime
-        
+
         # Create reports directory
         os.makedirs(save_dir, exist_ok=True)
-        
+
         # Evaluate model
         eval_result = self.evaluate_model(model_name, version)
-        
+
         # Generate timestamp
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        
+
         # Create report filename
         report_name = f"{model_name}_{timestamp}"
         if version:
             report_name = f"{model_name}_v{version}_{timestamp}"
-        
+
         report_path = os.path.join(save_dir, f"{report_name}_report.md")
-        
+
         # Generate plots
         conf_matrix_path = os.path.join(save_dir, f"{report_name}_confusion_matrix.png")
         roc_curve_path = os.path.join(save_dir, f"{report_name}_roc_curve.png")
-        
+
         self.plot_confusion_matrix(eval_result, conf_matrix_path)
         if eval_result['roc_curve']:
             self.plot_roc_curve(eval_result, roc_curve_path)
-        
+
         # Generate markdown report
         report_content = f"""# Model Evaluation Report
 
@@ -263,23 +263,23 @@ class ModelEvaluator:
 ![Confusion Matrix]({os.path.basename(conf_matrix_path)})
 
 """
-        
+
         if eval_result['roc_curve']:
             report_content += f"""## ROC Curve
 ![ROC Curve]({os.path.basename(roc_curve_path)})
 
 """
-        
+
         report_content += f"""## Summary
 The model achieved {eval_result['test_accuracy']:.2%} accuracy on the test set. """
-        
+
         if eval_result['auc_score']:
             report_content += f"The AUC score of {eval_result['auc_score']:.4f} indicates {'excellent' if eval_result['auc_score'] > 0.9 else 'good' if eval_result['auc_score'] > 0.8 else 'fair'} discriminative performance."
-        
+
         # Write report
         with open(report_path, 'w') as f:
             f.write(report_content)
-        
+
         logger.info(f"Evaluation report generated: {report_path}")
         return report_path
 
@@ -288,10 +288,10 @@ def evaluate_all_models() -> pd.DataFrame:
     """Evaluate all registered models and return comparison"""
     evaluator = ModelEvaluator()
     registry = NIDSModelRegistry()
-    
+
     models = registry.list_models()
     model_specs = []
-    
+
     for model_name in models:
         # Get latest version of each model
         try:
@@ -306,9 +306,9 @@ def evaluate_all_models() -> pd.DataFrame:
         except Exception:
             # Fall back to adding without version (will use latest)
             model_specs.append({'name': model_name})
-    
+
     if not model_specs:
         logger.warning("No models found")
         return pd.DataFrame()
-    
+
     return evaluator.compare_models(model_specs)

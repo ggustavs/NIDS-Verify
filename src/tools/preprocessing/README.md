@@ -44,7 +44,7 @@ uv run python ./tools/cli.py --help
 All NIDS-Verify tools use a consistent CLI approach through `pyproject.toml` entry points:
 
 - **`nids-train`**: Model training and management
-- **`nids-models`**: Model registry operations  
+- **`nids-models`**: Model registry operations
 - **`nids-preprocess`**: Data preprocessing and analysis tools
 
 ### Command Line Interface
@@ -144,7 +144,7 @@ All CLI commands are available alongside the other repository tools:
 
 ```bash
 uv run nids-train --help       # Model training
-uv run nids-models --help      # Model management  
+uv run nids-models --help      # Model management
 uv run nids-preprocess --help  # Data preprocessing tools
 ```
 

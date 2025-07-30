@@ -13,7 +13,8 @@ This module contains various preprocessing tools for the NIDS-Verify project:
 # Import legacy tools for backward compatibility
 # Import modular tools for convenience
 try:
-    from .preprocessing import FeatureExtractor, DataVisualizer
-    __all__ = ['FeatureExtractor', 'DataVisualizer']
+    from .preprocessing import DataVisualizer, FeatureExtractor
+
+    __all__ = ["FeatureExtractor", "DataVisualizer"]
 except ImportError:
     __all__ = []
