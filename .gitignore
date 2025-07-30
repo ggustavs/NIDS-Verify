@@ -1,4 +1,4 @@
-data
+/data
 .vscode
 misc
 mlruns
@@ -6,4 +6,4 @@ models
 logs
 __pycache__
 *.py[cod]
-*$py.class
+*$py.class0
