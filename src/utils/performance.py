@@ -1,5 +1,5 @@
 """
-Performance optimization and monitoring utilities
+Performance optimization and monitoring utilities (PyTorch)
 """
 
 import platform
@@ -8,59 +8,53 @@ from contextlib import contextmanager
 from typing import Any
 
 import psutil
-import tensorflow as tf
+import torch
 
 from src.utils.logging import get_logger
 
 logger = get_logger(__name__)
 
 
-def configure_tensorflow_performance() -> None:
-    """Configure TensorFlow for optimal performance"""
+def configure_torch_performance() -> None:
+    """Configure PyTorch for optimal performance"""
     try:
-        # Configure GPU memory growth
-        gpus = tf.config.list_physical_devices("GPU")
-        if gpus:
-            try:
-                for gpu in gpus:
-                    tf.config.experimental.set_memory_growth(gpu, True)
-                logger.info(f"✓ GPU memory growth configured for {len(gpus)} GPU(s)")
-            except RuntimeError as e:
-                logger.warning(f"GPU configuration failed: {e}")
+        # Enable cuDNN benchmark for optimized algorithms when input sizes are static
+        torch.backends.cudnn.benchmark = True
+        torch.backends.cudnn.deterministic = False
 
-        # Set threading configuration for CPU optimization
-        tf.config.threading.set_inter_op_parallelism_threads(0)  # Use all available cores
-        tf.config.threading.set_intra_op_parallelism_threads(0)  # Use all available cores
+        # Use higher precision matmul on Ampere+ GPUs for better throughput
+        # Use higher matmul precision if supported (PyTorch >= 2.0)
+        if hasattr(torch, "set_float32_matmul_precision"):
+            torch.set_float32_matmul_precision("high")
 
-        # Enable mixed precision if supported (optional, can improve performance)
-        try:
-            policy = tf.keras.mixed_precision.Policy("mixed_float16")
-            tf.keras.mixed_precision.set_global_policy(policy)
-            logger.debug("Mixed precision enabled")
-        except Exception as e:
-            logger.debug(f"Mixed precision not available: {e}")
-
-        logger.info("✓ TensorFlow performance configuration applied")
+        logger.info("✓ PyTorch performance configuration applied")
 
     except Exception as e:
-        logger.error(f"Failed to configure TensorFlow: {e}")
+        logger.error(f"Failed to configure PyTorch: {e}")
 
 
 def get_system_info() -> dict[str, Any]:
     """Get comprehensive system information"""
     memory = psutil.virtual_memory()
-    gpus = tf.config.list_physical_devices("GPU")
+    gpu_count = torch.cuda.device_count() if torch.cuda.is_available() else 0
+    gpu_devices = []
+    if gpu_count:
+        for i in range(gpu_count):
+            try:
+                gpu_devices.append(torch.cuda.get_device_name(i))
+            except Exception:
+                gpu_devices.append(f"cuda:{i}")
 
     return {
         "platform": platform.platform(),
         "python_version": platform.python_version(),
-        "tensorflow_version": tf.__version__,
+        "torch_version": torch.__version__,
         "cpu_count_physical": psutil.cpu_count(logical=False),
         "cpu_count_logical": psutil.cpu_count(logical=True),
         "memory_total_gb": round(memory.total / (1024**3), 2),
         "memory_available_gb": round(memory.available / (1024**3), 2),
-        "gpu_count": len(gpus),
-        "gpu_devices": [gpu.name for gpu in gpus] if gpus else [],
+        "gpu_count": gpu_count,
+        "gpu_devices": gpu_devices,
     }
 
 
@@ -70,7 +64,7 @@ def log_system_info() -> None:
     logger.info("=== System Information ===")
     logger.info(f"Platform: {info['platform']}")
     logger.info(f"Python: {info['python_version']}")
-    logger.info(f"TensorFlow: {info['tensorflow_version']}")
+    logger.info(f"PyTorch: {info['torch_version']}")
     logger.info(
         f"CPU: {info['cpu_count_physical']} physical, {info['cpu_count_logical']} logical cores"
     )
@@ -83,21 +77,23 @@ def log_system_info() -> None:
         logger.info("GPU: No devices found")
 
 
-def get_model_info(model: tf.keras.Model) -> dict[str, Any]:
-    """Get model information for monitoring"""
+def get_model_info(model: Any) -> dict[str, Any]:
+    """Get model information for monitoring (PyTorch)"""
     try:
-        total_params = model.count_params()
-        trainable_params = sum([tf.keras.backend.count_params(w) for w in model.trainable_weights])
+        total_params = sum(p.numel() for p in model.parameters())
+        trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+
+        layer_count = sum(1 for _ in model.modules()) - 1  # exclude the root module
 
         return {
-            "model_name": getattr(model, "name", "unnamed"),
+            "model_name": model.__class__.__name__,
             "total_parameters": int(total_params),
             "trainable_parameters": int(trainable_params),
             "non_trainable_parameters": int(total_params - trainable_params),
-            "layer_count": len(model.layers),
+            "layer_count": layer_count,
             "estimated_size_mb": round((total_params * 4) / (1024 * 1024), 2),  # Assuming float32
-            "input_shape": getattr(model, "input_shape", None),
-            "output_shape": getattr(model, "output_shape", None),
+            "input_shape": None,
+            "output_shape": None,
         }
     except Exception as e:
         logger.warning(f"Failed to get model info: {e}")
@@ -210,7 +206,8 @@ class Timer:
     """Simple timer class that stores elapsed time"""
 
     def __init__(self):
-        self.elapsed = 0
+        # Avoid attribute type annotations inside method for compatibility
+        self.elapsed = 0.0
         self.start_time = None
 
     def __enter__(self):
@@ -218,4 +215,7 @@ class Timer:
         return self
 
     def __exit__(self, exc_type, exc_val, exc_tb):
-        self.elapsed = time.time() - self.start_time
+        if self.start_time is not None:
+            self.elapsed = time.time() - self.start_time
+        else:
+            self.elapsed = 0.0

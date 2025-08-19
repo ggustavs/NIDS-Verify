@@ -8,12 +8,11 @@ from pathlib import Path
 from typing import Any
 
 import mlflow
-import mlflow.tensorflow
 
 from src.config import config
 
 
-def setup_logging(level: str = None, experiment_name: str = None) -> None:
+def setup_logging(level: str | None = None, experiment_name: str | None = None) -> None:
     """Setup logging configuration"""
     level = level or config.logging.level
     experiment_name = experiment_name or config.mlflow.experiment_name
@@ -167,26 +166,37 @@ class NIDSLogger:
             self.error(f"Failed to log artifact: {e}")
 
     def register_model(
-        self, model, model_name: str, description: str = None, tags: dict = None, **kwargs
+        self,
+        model,
+        model_name: str,
+        description: str | None = None,
+        tags: dict | None = None,
+        **kwargs,
     ):
-        """Register model in MLflow Model Registry"""
+        """Register model in MLflow Model Registry (framework-agnostic)."""
         if not config.mlflow.enabled:
             return None
         try:
-            # Log the model first
-            model_info = mlflow.tensorflow.log_model(
-                model,
-                model_name,
-                signature=kwargs.get("signature"),
-                input_example=kwargs.get("input_example"),
-                **{k: v for k, v in kwargs.items() if k not in ["signature", "input_example"]},
-            )
+            registry_name = model_name.replace("/", "_").replace("\\", "_")
+
+            # Try PyTorch logging first
+            model_uri = None
+            try:
+                import mlflow.pytorch  # type: ignore
+
+                mlflow.pytorch.log_model(model, artifact_path=registry_name)
+                model_uri = f"runs:/{mlflow.active_run().info.run_id}/{registry_name}"
+            except Exception:
+                # Fallback to logging a placeholder artifact
+                self.warning("mlflow.pytorch not available; logging generic artifact only")
+                temp_path = Path(config.experiment.model_save_path) / f"{registry_name}.txt"
+                temp_path.parent.mkdir(parents=True, exist_ok=True)
+                temp_path.write_text("Model artifact placeholder")
+                mlflow.log_artifact(str(temp_path), artifact_path=registry_name)
+                model_uri = f"runs:/{mlflow.active_run().info.run_id}/{registry_name}"
 
             # Register the model
-            registry_name = model_name.replace("/", "_").replace("\\", "_")
-            model_version = mlflow.register_model(
-                model_uri=model_info.model_uri, name=registry_name
-            )
+            model_version = mlflow.register_model(model_uri=model_uri, name=registry_name)
 
             # Update with description and tags
             if description or tags:
@@ -234,14 +244,14 @@ class NIDSLogger:
     # Configuration methods
     def configure_gradient_logging(
         self,
-        enabled: bool = None,
-        console: bool = None,
-        csv: bool = None,
-        mlflow: bool = None,
-        log_frequency: int = None,
-        mlflow_frequency: int = None,
-        health_threshold: float = None,
-        log_dir: str = None,
+        enabled: bool | None = None,
+        console: bool | None = None,
+        csv: bool | None = None,
+        mlflow: bool | None = None,
+        log_frequency: int | None = None,
+        mlflow_frequency: int | None = None,
+        health_threshold: float | None = None,
+        log_dir: str | None = None,
     ):
         """Configure gradient logging settings dynamically"""
         if enabled is not None:

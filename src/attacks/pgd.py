@@ -1,9 +1,9 @@
 """
-PGD (Projected Gradient Descent) attack implementation
+PGD (Projected Gradient Descent) attack implementation (PyTorch)
 """
 
 import numpy as np
-import tensorflow as tf
+import torch
 
 from src.utils.logging import get_logger
 
@@ -11,8 +11,11 @@ logger = get_logger(__name__)
 
 
 def project_to_hyperrectangle(
-    x: tf.Tensor, x_orig: tf.Tensor, attack_rects: list[np.ndarray], absolute_bounds: bool = False
-) -> tf.Tensor:
+    x: torch.Tensor,
+    x_orig: torch.Tensor,
+    attack_rects: list[np.ndarray],
+    absolute_bounds: bool = False,
+) -> torch.Tensor:
     """
     Project adversarial examples to hyperrectangle constraints
 
@@ -26,53 +29,35 @@ def project_to_hyperrectangle(
     Returns:
         Projected adversarial examples
     """
-    x_proj = tf.identity(x)
+    x_proj = x.clone()
 
-    for i, rect in enumerate(attack_rects):
-        if len(rect) >= 2:
-            if absolute_bounds:
-                # Use absolute bounds from research hyperrectangles
-                # Handle both tensor and numpy/python cases
-                if isinstance(rect[0], tf.Tensor):
-                    lower_bound = rect[0]
-                    upper_bound = rect[1]
-                else:
-                    lower_bound = tf.constant(float(rect[0]), dtype=tf.float32)
-                    upper_bound = tf.constant(float(rect[1]), dtype=tf.float32)
-            else:
-                # Calculate bounds relative to original input (perturbation mode)
-                if isinstance(rect[0], tf.Tensor):
-                    lower_bound = x_orig[:, i] + rect[0]
-                    upper_bound = x_orig[:, i] + rect[1]
-                else:
-                    lower_bound = x_orig[:, i] + tf.constant(float(rect[0]), dtype=tf.float32)
-                    upper_bound = x_orig[:, i] + tf.constant(float(rect[1]), dtype=tf.float32)
-
-            # Clip to bounds
-            if i == 0:
-                # First column
-                x_proj = tf.concat(
-                    [
-                        tf.expand_dims(tf.clip_by_value(x_proj[:, i], lower_bound, upper_bound), 1),
-                        x_proj[:, 1:],
-                    ],
-                    axis=1,
-                )
-            else:
-                # Other columns
-                x_proj = tf.concat(
-                    [
-                        x_proj[:, :i],
-                        tf.expand_dims(tf.clip_by_value(x_proj[:, i], lower_bound, upper_bound), 1),
-                        x_proj[:, i + 1 :],
-                    ],
-                    axis=1,
-                )
+    # Vectorized per-feature clamping without repeated cat operations
+    num_features = min(x_proj.shape[1], len(attack_rects))
+    for i in range(num_features):
+        rect = attack_rects[i]
+        if rect is None or len(rect) < 2:
+            continue
+        if absolute_bounds:
+            # Scalar bounds
+            lb: float = float(rect[0])
+            ub: float = float(rect[1])
+            col = x_proj[:, i]
+            col = col.clamp(min=lb, max=ub)
+            x_proj[:, i] = col
+        else:
+            # Tensor bounds per-sample
+            lb_t = x_orig[:, i] + float(rect[0])
+            ub_t = x_orig[:, i] + float(rect[1])
+            col = x_proj[:, i]
+            col = torch.minimum(torch.maximum(col, lb_t), ub_t)
+            x_proj[:, i] = col
 
     return x_proj
 
 
-def project_to_research_hyperrectangle(x: tf.Tensor, hyperrect_pattern: str = "hulk") -> tf.Tensor:
+def project_to_research_hyperrectangle(
+    x: torch.Tensor, hyperrect_pattern: str = "hulk"
+) -> torch.Tensor:
     """
     Project adversarial examples to research-based hyperrectangle constraints.
     This uses the absolute bounds defined in the original research.
@@ -97,8 +82,8 @@ def project_to_research_hyperrectangle(x: tf.Tensor, hyperrect_pattern: str = "h
     upper_bounds = []
 
     # Determine how many features we can bound (limited by both bounds and input)
-    input_features = tf.shape(x)[1]
-    max_features = min(len(bounds), x.shape[1] if x.shape[1] is not None else len(bounds))
+    input_features = x.shape[1]
+    max_features = min(len(bounds), input_features if input_features is not None else len(bounds))
 
     # Extract bounds up to max_features
     for i in range(max_features):
@@ -114,34 +99,33 @@ def project_to_research_hyperrectangle(x: tf.Tensor, hyperrect_pattern: str = "h
         return x  # No bounds to apply
 
     # Convert to tensors
-    lower_bounds_tensor = tf.constant(lower_bounds, dtype=tf.float32)
-    upper_bounds_tensor = tf.constant(upper_bounds, dtype=tf.float32)
+    lower_bounds_tensor = torch.tensor(lower_bounds, dtype=torch.float32, device=x.device)
+    upper_bounds_tensor = torch.tensor(upper_bounds, dtype=torch.float32, device=x.device)
 
     # Extract the features that have bounds
     x_bounded = x[:, : len(lower_bounds)]
 
     # Apply clipping
-    x_clipped = tf.clip_by_value(x_bounded, lower_bounds_tensor, upper_bounds_tensor)
+    x_clipped = torch.max(torch.min(x_bounded, upper_bounds_tensor), lower_bounds_tensor)
 
     # Reconstruct the full tensor
     if len(lower_bounds) < input_features:
         # Concatenate clipped bounded features with unbounded features
-        x_proj = tf.concat([x_clipped, x[:, len(lower_bounds) :]], axis=1)
+        x_proj = torch.cat([x_clipped, x[:, len(lower_bounds) :]], dim=1)
     else:
         x_proj = x_clipped
 
     return x_proj
 
 
-@tf.function
 def pgd_attack_step(
-    model: tf.keras.Model,
-    x: tf.Tensor,
-    y: tf.Tensor,
+    model,
+    x: torch.Tensor,
+    y: torch.Tensor,
     attack_rects: list[np.ndarray],
     step_size: float,
     use_research_bounds: bool = True,
-) -> tf.Tensor:
+) -> torch.Tensor:
     """
     Single PGD attack step
 
@@ -156,19 +140,14 @@ def pgd_attack_step(
     Returns:
         Updated adversarial examples
     """
-    x_orig = tf.identity(x)
-
-    with tf.GradientTape() as tape:
-        tape.watch(x)
-        logits = model(x, training=False)
-        loss = tf.keras.losses.sparse_categorical_crossentropy(y, logits, from_logits=True)
-        loss = tf.reduce_mean(loss)
-
-    # Calculate gradients
-    gradients = tape.gradient(loss, x)
-
-    # Gradient ascent step (we want to maximize loss)
-    x_adv = x + step_size * tf.sign(gradients)
+    x_orig = x.clone().detach()
+    x = x.clone().detach().requires_grad_(True)
+    logits = model(x)
+    loss = torch.nn.functional.cross_entropy(logits, y.long())
+    loss.backward()
+    gradients = x.grad if x.grad is not None else torch.zeros_like(x)
+    gradients = gradients.detach()
+    x_adv = x + step_size * torch.sign(gradients)
 
     # Project to constraints using appropriate method
     if use_research_bounds:
@@ -182,15 +161,15 @@ def pgd_attack_step(
 
 
 def generate_pgd_adversarial_examples(
-    model: tf.keras.Model,
-    x: tf.Tensor,
-    y: tf.Tensor,
-    attack_rects: list[np.ndarray] = None,
+    model,
+    x: torch.Tensor,
+    y: torch.Tensor,
+    attack_rects: list[np.ndarray] | None = None,
     epsilon: float = 0.1,
     num_steps: int = 3,
     step_size: float = 0.01,
     attack_pattern: str = "hulk",
-) -> tf.Tensor:
+) -> torch.Tensor:
     """
     Generate adversarial examples using PGD attack with research-based hyperrectangles
 
@@ -209,14 +188,14 @@ def generate_pgd_adversarial_examples(
     """
     # Use research-based attack rectangles if none provided
     if attack_rects is None:
-        input_size = tf.shape(x)[1].numpy() if hasattr(tf.shape(x)[1], "numpy") else 42
+        input_size = x.shape[1] if x.shape[1] is not None else 42
         attack_rects = create_attack_rectangles(
             attack_pattern=attack_pattern, input_size=input_size
         )
         logger.info(f"Using research-based '{attack_pattern}' hyperrectangles for PGD attack")
 
     # Initialize adversarial examples with small random noise
-    x_adv = x + tf.random.uniform(tf.shape(x), -epsilon / 10, epsilon / 10)
+    x_adv = x + torch.empty_like(x).uniform_(-epsilon / 10, epsilon / 10)
 
     # Project to research hyperrectangle immediately
     x_adv = project_to_research_hyperrectangle(x_adv, attack_pattern)
@@ -476,7 +455,7 @@ def get_research_hyperrectangles():
 
 
 def create_attack_rectangles(
-    feature_names: list[str] = None, attack_pattern: str = "mixed", input_size: int = 42
+    feature_names: list[str] | None = None, attack_pattern: str = "mixed", input_size: int = 42
 ) -> list[np.ndarray]:
     """
     Create attack rectangles using research-based hyperrectangle definitions.
@@ -502,20 +481,14 @@ def create_attack_rectangles(
         logger.warning(f"Unknown attack pattern '{attack_pattern}', using 'hulk'")
         selected_hyperrect = hyperrects["hulk"]
 
-    # Convert from research format [min, max] per feature to perturbation bounds
-    attack_rects = []
+    # Use absolute bounds consistent with research hyperrectangles; projection decides mode
+    attack_rects: list[np.ndarray] = []
     for i, bounds in enumerate(selected_hyperrect):
         if i >= input_size:
             break
-        # Convert absolute bounds to perturbation bounds (relative to input)
-        min_bound = bounds[0] if isinstance(bounds, list) and len(bounds) > 0 else -0.1
-        max_bound = bounds[1] if isinstance(bounds, list) and len(bounds) > 1 else 0.1
-
-        # For PGD, we need perturbation bounds, so we use the range as delta
-        delta_min = min_bound - 0.5  # Assume 0.5 as baseline
-        delta_max = max_bound - 0.5
-
-        attack_rects.append(np.array([delta_min, delta_max], dtype=np.float32))
+        min_bound = bounds[0] if isinstance(bounds, list) and len(bounds) > 0 else -1.0
+        max_bound = bounds[1] if isinstance(bounds, list) and len(bounds) > 1 else 1.0
+        attack_rects.append(np.array([min_bound, max_bound], dtype=np.float32))
 
     # Fill remaining features if input_size is larger
     while len(attack_rects) < input_size:

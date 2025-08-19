@@ -1,8 +1,8 @@
 """
-Model evaluation utilities for registered NIDS models
+Model evaluation utilities for registered NIDS models (PyTorch)
 """
 import mlflow
-import tensorflow as tf
+import torch
 import numpy as np
 import pandas as pd
 from typing import Dict, Any, Tuple, Optional
@@ -43,18 +43,22 @@ class ModelEvaluator:
             data_loader = DataLoader()
             _, _, test_dataset, _ = data_loader.load_data()
 
-            # Collect all test data
+            # Collect all test data and evaluate with torch
             test_X, test_y = [], []
             for x_batch, y_batch in test_dataset:
+                # x_batch, y_batch are tensors from our DataLoader
                 test_X.append(x_batch.numpy())
                 test_y.append(y_batch.numpy())
 
             test_X = np.vstack(test_X)
             test_y = np.hstack(test_y)
 
-            # Make predictions
-            predictions = model.predict(test_X, verbose=0)
-            predicted_probs = tf.nn.softmax(predictions).numpy()
+            # Make predictions using torch model
+            model.eval()
+            with torch.no_grad():
+                logits = model(torch.from_numpy(test_X).float())
+                probs = torch.softmax(logits, dim=1).cpu().numpy()
+            predicted_probs = probs
             predicted_classes = np.argmax(predicted_probs, axis=1)
 
             # Calculate metrics

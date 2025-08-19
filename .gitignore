@@ -6,4 +6,5 @@ models
 logs
 __pycache__
 *.py[cod]
-*$py.class0
+*$py.class
+src/__pycache__

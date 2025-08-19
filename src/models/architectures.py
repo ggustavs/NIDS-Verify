@@ -1,10 +1,11 @@
 """
-Model architectures for NIDS
+Model architectures for NIDS (PyTorch)
 """
-import tensorflow as tf
-from tensorflow import keras
-from keras import layers
 from typing import Dict, Any
+
+import torch
+from torch import nn
+
 from src.config import config
 from src.utils.logging import get_logger
 from src.utils.performance import get_model_info
@@ -18,9 +19,9 @@ class ModelFactory:
     def __init__(self, input_size: int, seed: int = None):
         self.input_size = input_size
         self.seed = seed or config.model.initializer_seed
-        self.initializer = tf.keras.initializers.GlorotUniform(seed=self.seed)
+        torch.manual_seed(self.seed)
 
-    def create_model(self, model_type: str) -> keras.Model:
+    def create_model(self, model_type: str) -> nn.Module:
         """Create a model based on the specified type"""
         model_creators = {
             'small': self._create_small_model,
@@ -48,103 +49,128 @@ class ModelFactory:
 
         return model
 
-    def _create_small_model(self) -> keras.Model:
-        return keras.Sequential([
-            layers.Input(shape=(self.input_size,), name='input_features'),
-            layers.Dense(128, activation='relu', kernel_initializer=self.initializer, name='dense_1'),
-            layers.Dense(2, activation='linear', kernel_initializer=self.initializer, name='output_layer')
-        ], name='small_model')
+    def _create_small_model(self) -> nn.Module:
+        return nn.Sequential(
+            nn.Linear(self.input_size, 128),
+            nn.ReLU(),
+            nn.Linear(128, 2),
+        )
 
-    def _create_mid_model(self) -> keras.Model:
-        return keras.Sequential([
-            layers.Input(shape=(self.input_size,), name='input_features'),
-            layers.Dense(256, activation='relu', kernel_initializer=self.initializer, name='dense_1'),
-            layers.Dense(128, activation='relu', kernel_initializer=self.initializer, name='dense_2'),
-            layers.Dense(2, activation='linear', kernel_initializer=self.initializer, name='output_layer')
-        ], name='mid_model')
+    def _create_mid_model(self) -> nn.Module:
+        return nn.Sequential(
+            nn.Linear(self.input_size, 256),
+            nn.ReLU(),
+            nn.Linear(256, 128),
+            nn.ReLU(),
+            nn.Linear(128, 2),
+        )
 
-    def _create_mid2_model(self) -> keras.Model:
-        return keras.Sequential([
-            layers.Input(shape=(self.input_size,), name='input_features'),
-            layers.Dense(512, activation='relu', kernel_initializer=self.initializer, name='dense_1'),
-            layers.Dense(256, activation='relu', kernel_initializer=self.initializer, name='dense_2'),
-            layers.Dense(128, activation='relu', kernel_initializer=self.initializer, name='dense_3'),
-            layers.Dense(2, activation='linear', kernel_initializer=self.initializer, name='output_layer')
-        ], name='mid2_model')
+    def _create_mid2_model(self) -> nn.Module:
+        return nn.Sequential(
+            nn.Linear(self.input_size, 512),
+            nn.ReLU(),
+            nn.Linear(512, 256),
+            nn.ReLU(),
+            nn.Linear(256, 128),
+            nn.ReLU(),
+            nn.Linear(128, 2),
+        )
 
-    def _create_mid3_model(self) -> keras.Model:
-        return keras.Sequential([
-            layers.Input(shape=(self.input_size,), name='input_features'),
-            layers.Dense(512, activation='relu', kernel_initializer=self.initializer, name='dense_1'),
-            layers.Dense(256, activation='relu', kernel_initializer=self.initializer, name='dense_2'),
-            layers.Dense(256, activation='relu', kernel_initializer=self.initializer, name='dense_3'),
-            layers.Dense(128, activation='relu', kernel_initializer=self.initializer, name='dense_4'),
-            layers.Dense(2, activation='linear', kernel_initializer=self.initializer, name='output_layer')
-        ], name='mid3_model')
+    def _create_mid3_model(self) -> nn.Module:
+        return nn.Sequential(
+            nn.Linear(self.input_size, 512),
+            nn.ReLU(),
+            nn.Linear(512, 256),
+            nn.ReLU(),
+            nn.Linear(256, 256),
+            nn.ReLU(),
+            nn.Linear(256, 128),
+            nn.ReLU(),
+            nn.Linear(128, 2),
+        )
 
-    def _create_mid4_model(self) -> keras.Model:
-        return keras.Sequential([
-            layers.Input(shape=(self.input_size,), name='input_features'),
-            layers.Dense(512, activation='relu', kernel_initializer=self.initializer, name='dense_0'),
-            layers.Dense(512, activation='relu', kernel_initializer=self.initializer, name='dense_1'),
-            layers.Dense(256, activation='relu', kernel_initializer=self.initializer, name='dense_2'),
-            layers.Dense(128, activation='relu', kernel_initializer=self.initializer, name='dense_3'),
-            layers.Dense(2, activation='linear', kernel_initializer=self.initializer, name='output_layer')
-        ], name='mid4_model')
+    def _create_mid4_model(self) -> nn.Module:
+        return nn.Sequential(
+            nn.Linear(self.input_size, 512),
+            nn.ReLU(),
+            nn.Linear(512, 512),
+            nn.ReLU(),
+            nn.Linear(512, 256),
+            nn.ReLU(),
+            nn.Linear(256, 128),
+            nn.ReLU(),
+            nn.Linear(128, 2),
+        )
 
-    def _create_big_model(self) -> keras.Model:
-        return keras.Sequential([
-            layers.Input(shape=(self.input_size,), name='input_features'),
-            layers.Dense(1024, activation='relu', kernel_initializer=self.initializer, name='dense_1'),
-            layers.Dense(512, activation='relu', kernel_initializer=self.initializer, name='dense_2'),
-            layers.Dense(256, activation='relu', kernel_initializer=self.initializer, name='dense_3'),
-            layers.Dense(128, activation='relu', kernel_initializer=self.initializer, name='dense_4'),
-            layers.Dense(2, activation='linear', kernel_initializer=self.initializer, name='output_layer')
-        ], name='big_model')
+    def _create_big_model(self) -> nn.Module:
+        return nn.Sequential(
+            nn.Linear(self.input_size, 1024),
+            nn.ReLU(),
+            nn.Linear(1024, 512),
+            nn.ReLU(),
+            nn.Linear(512, 256),
+            nn.ReLU(),
+            nn.Linear(256, 128),
+            nn.ReLU(),
+            nn.Linear(128, 2),
+        )
 
-    def _create_big2_model(self) -> keras.Model:
-        return keras.Sequential([
-            layers.Input(shape=(self.input_size,), name='input_features'),
-            layers.Dense(1024, activation='relu', kernel_initializer=self.initializer, name='dense_1'),
-            layers.Dense(512, activation='relu', kernel_initializer=self.initializer, name='dense_2'),
-            layers.Dense(512, activation='relu', kernel_initializer=self.initializer, name='dense_3'),
-            layers.Dense(256, activation='relu', kernel_initializer=self.initializer, name='dense_4'),
-            layers.Dense(2, activation='linear', kernel_initializer=self.initializer, name='output_layer')
-        ], name='big2_model')
+    def _create_big2_model(self) -> nn.Module:
+        return nn.Sequential(
+            nn.Linear(self.input_size, 1024),
+            nn.ReLU(),
+            nn.Linear(1024, 512),
+            nn.ReLU(),
+            nn.Linear(512, 512),
+            nn.ReLU(),
+            nn.Linear(512, 256),
+            nn.ReLU(),
+            nn.Linear(256, 2),
+        )
 
-    def _create_big3_model(self) -> keras.Model:
-        return keras.Sequential([
-            layers.Input(shape=(self.input_size,), name='input_features'),
-            layers.Dense(1024, activation='relu', kernel_initializer=self.initializer, name='dense_1'),
-            layers.Dense(1024, activation='relu', kernel_initializer=self.initializer, name='dense_2'),
-            layers.Dense(512, activation='relu', kernel_initializer=self.initializer, name='dense_3'),
-            layers.Dense(256, activation='relu', kernel_initializer=self.initializer, name='dense_4'),
-            layers.Dense(2, activation='linear', kernel_initializer=self.initializer, name='output_layer')
-        ], name='big3_model')
+    def _create_big3_model(self) -> nn.Module:
+        return nn.Sequential(
+            nn.Linear(self.input_size, 1024),
+            nn.ReLU(),
+            nn.Linear(1024, 1024),
+            nn.ReLU(),
+            nn.Linear(1024, 512),
+            nn.ReLU(),
+            nn.Linear(512, 256),
+            nn.ReLU(),
+            nn.Linear(256, 2),
+        )
 
-    def _create_big4_model(self) -> keras.Model:
-        return keras.Sequential([
-            layers.Input(shape=(self.input_size,), name='input_features'),
-            layers.Dense(2048, activation='relu', kernel_initializer=self.initializer, name='dense_1'),
-            layers.Dense(1024, activation='relu', kernel_initializer=self.initializer, name='dense_2'),
-            layers.Dense(512, activation='relu', kernel_initializer=self.initializer, name='dense_3'),
-            layers.Dense(256, activation='relu', kernel_initializer=self.initializer, name='dense_4'),
-            layers.Dense(2, activation='linear', kernel_initializer=self.initializer, name='output_layer')
-        ], name='big4_model')
+    def _create_big4_model(self) -> nn.Module:
+        return nn.Sequential(
+            nn.Linear(self.input_size, 2048),
+            nn.ReLU(),
+            nn.Linear(2048, 1024),
+            nn.ReLU(),
+            nn.Linear(1024, 512),
+            nn.ReLU(),
+            nn.Linear(512, 256),
+            nn.ReLU(),
+            nn.Linear(256, 2),
+        )
 
-    def _create_massive_model(self) -> keras.Model:
-        return keras.Sequential([
-            layers.Input(shape=(self.input_size,), name='input_features'),
-            layers.Dense(2048, activation='relu', kernel_initializer=self.initializer, name='dense_3'),
-            layers.Dense(1024, activation='relu', kernel_initializer=self.initializer, name='dense_4'),
-            layers.Dense(512, activation='relu', kernel_initializer=self.initializer, name='dense_5'),
-            layers.Dense(256, activation='relu', kernel_initializer=self.initializer, name='dense_6'),
-            layers.Dense(128, activation='relu', kernel_initializer=self.initializer, name='dense_7'),
-            layers.Dense(2, activation='linear', kernel_initializer=self.initializer, name='output_layer')
-        ], name='massive_model')
+    def _create_massive_model(self) -> nn.Module:
+        return nn.Sequential(
+            nn.Linear(self.input_size, 2048),
+            nn.ReLU(),
+            nn.Linear(2048, 1024),
+            nn.ReLU(),
+            nn.Linear(1024, 512),
+            nn.ReLU(),
+            nn.Linear(512, 256),
+            nn.ReLU(),
+            nn.Linear(256, 128),
+            nn.ReLU(),
+            nn.Linear(128, 2),
+        )
 
 
-def create_model(input_size: int, model_type: str) -> keras.Model:
+def create_model(input_size: int, model_type: str) -> nn.Module:
     """
     Create a model instance
 
@@ -153,13 +179,9 @@ def create_model(input_size: int, model_type: str) -> keras.Model:
         model_type: Type of model to create
 
     Returns:
-        Keras model instance
+        PyTorch model instance
     """
     factory = ModelFactory(input_size)
     model = factory.create_model(model_type)
-
-    # Print model summary for debugging
-    if logger.logger.level <= 10:  # DEBUG level
-        model.summary()
 
     return model

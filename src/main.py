@@ -1,21 +1,19 @@
 """
-Main entry point for NIDS training
+Main entry point for NIDS training (PyTorch)
 """
 
 import argparse
 import os
 import sys
 
-# Configure TensorFlow before importing other modules
-os.environ["TF_CPP_MIN_LOG_LEVEL"] = "1"  # Suppress INFO messages
-import tensorflow as tf
+import torch
 
 from src.config import config
 from src.data import DataLoader
 from src.models import create_model
 from src.training import train_adversarial, train_base
 from src.utils.logging import get_logger, setup_logging
-from src.utils.performance import configure_tensorflow_performance, log_system_info
+from src.utils.performance import configure_torch_performance, log_system_info
 
 
 def parse_arguments() -> argparse.Namespace:
@@ -78,46 +76,30 @@ def parse_arguments() -> argparse.Namespace:
     parser.add_argument(
         "--dataset",
         type=str,
-        default="preprocessed",
-        choices=["preprocessed", "cic_wednesday"],
-        help="Dataset to use (preprocessed: original researcher data ~108k samples, cic_wednesday: larger dataset ~799k samples)",
+        default="fixed",
+        choices=["original", "fixed"],
+        help="Dataset to use (original: preprocessed-dos-*, fixed: CICWednesday pos_neg split)",
     )
 
     return parser.parse_args()
 
 
-def setup_tensorflow(device: str = "auto") -> None:
-    """Setup TensorFlow configuration"""
+def setup_device(device: str = "auto") -> None:
+    """Setup PyTorch device configuration"""
     logger = get_logger(__name__)
+    configure_torch_performance()
 
-    # Configure performance optimizations
-    configure_tensorflow_performance()
-
-    # Device configuration
     if device == "cpu":
-        tf.config.set_visible_devices([], "GPU")
+        os.environ["CUDA_VISIBLE_DEVICES"] = ""
         logger.info("Forcing CPU usage")
     elif device == "gpu":
-        gpus = tf.config.list_physical_devices("GPU")
-        if gpus:
-            try:
-                # Enable memory growth
-                for gpu in gpus:
-                    tf.config.experimental.set_memory_growth(gpu, True)
-                logger.info(f"Configured {len(gpus)} GPU(s) with memory growth")
-            except RuntimeError as e:
-                logger.warning(f"GPU configuration failed: {e}")
+        if torch.cuda.is_available():
+            logger.info(f"Using GPU: {torch.cuda.get_device_name(0)}")
         else:
             logger.warning("No GPUs found, falling back to CPU")
-    else:  # auto
-        gpus = tf.config.list_physical_devices("GPU")
-        if gpus:
-            try:
-                for gpu in gpus:
-                    tf.config.experimental.set_memory_growth(gpu, True)
-                logger.info(f"Auto-configured {len(gpus)} GPU(s)")
-            except RuntimeError as e:
-                logger.warning(f"GPU auto-configuration failed: {e}")
+    else:
+        if torch.cuda.is_available():
+            logger.info(f"Auto-selected GPU: {torch.cuda.get_device_name(0)}")
         else:
             logger.info("No GPUs found, using CPU")
 
@@ -136,8 +118,8 @@ def main() -> int:
         logger.info("Starting NIDS training pipeline")
         logger.info(f"Arguments: {vars(args)}")
 
-        # Setup TensorFlow
-        setup_tensorflow(args.device)
+        # Setup device (PyTorch)
+        setup_device(args.device)
 
         # Log system information
         log_system_info()
@@ -154,17 +136,7 @@ def main() -> int:
         # Create model
         logger.info(f"Creating {args.model_type} model...")
         model = create_model(input_size, args.model_type)
-
-        # Compile model
-        model.compile(
-            optimizer=tf.keras.optimizers.Adam(learning_rate=config.training.learning_rate),
-            loss=tf.keras.losses.SparseCategoricalCrossentropy(from_logits=True),
-            metrics=["accuracy"],
-        )
-
-        logger.info("Model compiled successfully")
-        if logger.logger.level <= 20:  # INFO level or below
-            model.summary()
+        logger.info("Model created successfully")
 
         # Training
         if args.training_type == "adversarial":
@@ -179,9 +151,10 @@ def main() -> int:
                 model=model,
                 train_dataset=train_dataset,
                 val_dataset=val_dataset,
-                attack_rects=None,  # Let training use research hyperrectangles
+                attack_rects=None,
                 epochs=args.epochs,
                 steps_per_epoch=args.steps_per_epoch,
+                attack_pattern=args.attack_pattern,
             )
 
         else:  # base training
@@ -196,10 +169,12 @@ def main() -> int:
                 steps_per_epoch=args.steps_per_epoch,
             )
 
-        # Final evaluation
+        # Final evaluation (Torch)
         logger.info("Evaluating on test set...")
-        test_results = model.evaluate(test_dataset, verbose=0)
-        logger.info(f"Test Loss: {test_results[0]:.4f}, Test Accuracy: {test_results[1]:.4f}")
+        from src.training.trainer import evaluate_model as torch_evaluate
+
+        test_loss, test_acc = torch_evaluate(model, test_dataset)
+        logger.info(f"Test Loss: {test_loss:.4f}, Test Accuracy: {test_acc:.4f}")
 
         # Log training summary
         final_train_acc = history["accuracy"][-1] if history["accuracy"] else 0

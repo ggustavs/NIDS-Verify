@@ -8,7 +8,10 @@ for scalable feature extraction. Includes automated cleanup and result aggregati
 import argparse
 import logging
 import os
+import re
+import shutil
 import subprocess  # nosec
+import sys
 
 import pandas as pd
 
@@ -27,7 +30,7 @@ class BatchPcapProcessor:
         labels_file: str,
         output_dir: str = "splits",
         window_size: int = 10,
-        size_limit: str = "1000m",
+        size_limit: str | int = "1000m",
         verbose: bool = True,
     ):
         """
@@ -38,7 +41,7 @@ class BatchPcapProcessor:
             labels_file: Path to CSV file with labels
             output_dir: Directory for temporary split files
             window_size: Feature extraction window size
-            size_limit: Size limit for each split (e.g., '1000m' for 1GB)
+            size_limit: Size limit for each split (e.g., '1000m' or 1000 for MB)
             verbose: Enable detailed logging
         """
         self.input_pcap = input_pcap
@@ -47,7 +50,6 @@ class BatchPcapProcessor:
         self.window_size = window_size
         self.size_limit = size_limit
         self.verbose = verbose
-        self.temp_dir_created = False
 
     def split_pcap(self) -> list[str]:
         """
@@ -56,7 +58,24 @@ class BatchPcapProcessor:
         Returns:
             List of split file paths
         """
+        # Validate prerequisites
+        if not os.path.exists(self.input_pcap):
+            raise FileNotFoundError(f"Input PCAP not found: {self.input_pcap}")
+        if shutil.which("tcpdump") is None:
+            raise RuntimeError("tcpdump not found on PATH; please install tcpdump to split PCAPs")
+
         os.makedirs(self.output_dir, exist_ok=True)
+
+        # Determine size in MB for tcpdump -C
+        size_arg = self.size_limit
+        if isinstance(size_arg, str) and size_arg.lower().endswith("m"):
+            size_mb = size_arg[:-1]
+        else:
+            size_mb = str(size_arg)
+        if not str(size_mb).isdigit():
+            raise ValueError(
+                f"Invalid size_limit: {self.size_limit} (expected like '1000m' or '1000')"
+            )
 
         # Use tcpdump to split the file
         split_prefix = os.path.join(self.output_dir, "split_")
@@ -67,12 +86,12 @@ class BatchPcapProcessor:
             "-w",
             split_prefix,
             "-C",
-            self.size_limit[:-1],  # Remove 'm' suffix
+            str(size_mb),
         ]
 
         try:
             if self.verbose:
-                logger.info(f"Splitting {self.input_pcap} into {self.size_limit} chunks...")
+                logger.info(f"Splitting {self.input_pcap} into {size_mb}MB chunks...")
             subprocess.run(split_command, check=True, capture_output=not self.verbose)  # nosec
             if self.verbose:
                 logger.info(f"PCAP file split into chunks in {self.output_dir}")
@@ -81,7 +100,6 @@ class BatchPcapProcessor:
 
         # Find all split files
         split_files = self._find_split_files()
-
         if not split_files:
             raise RuntimeError("No split files were created")
 
@@ -89,25 +107,34 @@ class BatchPcapProcessor:
 
     def _find_split_files(self) -> list[str]:
         """Find and sort split files."""
-        split_files = []
+        split_files: list[str] = []
 
-        for file in os.listdir(self.output_dir):
-            if file.startswith("split_") and not file.endswith(".csv"):
-                split_files.append(os.path.join(self.output_dir, file))
+        for fname in os.listdir(self.output_dir):
+            if fname.startswith("split_") and not fname.endswith(".csv"):
+                split_files.append(os.path.join(self.output_dir, fname))
 
         # Sort files numerically if possible
-        def sort_key(filename):
+        def sort_key(filename: str):
             basename = os.path.basename(filename)
-            if basename == "split_":
+            # Remove extension like ".1", ".pcap", etc., then capture trailing digits
+            stem, _ext = os.path.splitext(basename)
+            m = re.search(r"(\d+)$", stem)
+            if m:
+                try:
+                    return int(m.group(1))
+                except ValueError:
+                    return float("inf")
+            # tcpdump may create base file without suffix first
+            if stem == "split_":
                 return 0
-            try:
-                # Extract number from filename like "split_01", "split_02", etc.
-                parts = basename.split("_")
-                if len(parts) > 1 and parts[-1].isdigit():
-                    return int(parts[-1])
-            except (ValueError, IndexError, AttributeError):
-                logging.logger.warning(f"Failed to parse split filename: {basename}")
-                pass
+            # As a fallback, try digits at end of full basename (e.g., split_.1)
+            m2 = re.search(r"(\d+)$", basename)
+            if m2:
+                try:
+                    return int(m2.group(1))
+                except ValueError:
+                    return float("inf")
+            logger.warning(f"Unrecognized split filename ordering: {basename}")
             return float("inf")
 
         split_files.sort(key=sort_key)
@@ -124,7 +151,7 @@ class BatchPcapProcessor:
             Combined DataFrame with all extracted features
         """
         combined_df = pd.DataFrame()
-        processed_files = []
+        processed_files: list[str] = []
 
         for i, split_file in enumerate(split_files, 1):
             if self.verbose:
@@ -160,9 +187,9 @@ class BatchPcapProcessor:
         """Process a single split file using the feature extractor."""
         # Construct command to run feature extraction
         cmd = [
-            "python",
+            sys.executable,
             "-m",
-            "tools.pcap_processing.extractor",
+            "src.tools.preprocessing.pcap_processing.extractor",
             split_file,
             "--labels",
             self.labels_file,
@@ -174,7 +201,12 @@ class BatchPcapProcessor:
             cmd.append("--quiet")
 
         try:
-            subprocess.run(cmd, check=True, capture_output=True, text=True)  # nosec
+            subprocess.run(
+                cmd,
+                check=True,
+                capture_output=not self.verbose,
+                text=True,
+            )  # nosec
 
             # Expected output CSV file
             output_csv = os.path.splitext(split_file)[0] + "_features_with_labels.csv"
@@ -187,10 +219,6 @@ class BatchPcapProcessor:
 
         except subprocess.CalledProcessError as e:
             logger.error(f"Feature extraction failed for {split_file}: {e}")
-            if e.stdout:
-                logger.error(f"stdout: {e.stdout}")
-            if e.stderr:
-                logger.error(f"stderr: {e.stderr}")
             return None
 
     def cleanup_temp_files(self, split_files: list[str]) -> None:
@@ -210,10 +238,10 @@ class BatchPcapProcessor:
                 logger.warning(f"Failed to remove {split_file}: {e}")
 
         # Remove intermediate CSV files
-        for file in os.listdir(self.output_dir):
-            if file.endswith("_features_with_labels.csv"):
+        for fname in os.listdir(self.output_dir):
+            if fname.endswith("_features_with_labels.csv"):
                 try:
-                    file_path = os.path.join(self.output_dir, file)
+                    file_path = os.path.join(self.output_dir, fname)
                     os.remove(file_path)
                     files_removed += 1
                 except Exception as e:

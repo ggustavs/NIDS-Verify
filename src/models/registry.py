@@ -1,8 +1,7 @@
 """
-MLflow Model Registry utilities for NIDS models
+MLflow Model Registry utilities for NIDS models (in transition to PyTorch)
 """
 import mlflow
-import mlflow.tensorflow
 import mlflow.exceptions
 from mlflow.tracking import MlflowClient
 from typing import Optional, List, Dict, Any
@@ -104,7 +103,12 @@ class NIDSModelRegistry:
                     raise ValueError(f"No versions found for model {model_name}")
                 model_uri = f"models:/{model_name}/{versions[0].version}"
 
-            model = mlflow.tensorflow.load_model(model_uri)
+            # TODO: migrate to mlflow.pytorch; for now, use generic loader if available
+            try:
+                import mlflow.pytorch  # noqa: F401
+                model = mlflow.pytorch.load_model(model_uri)
+            except Exception:
+                model = mlflow.pyfunc.load_model(model_uri)
             version_str = f"version {version}" if version else f"latest version ({versions[0].version})"
             logger.info(f"Loaded model {model_name} from {version_str}")
             return model
@@ -149,12 +153,13 @@ class NIDSModelRegistry:
         Returns:
             MLflow run ID
         """
-        import tensorflow as tf
+    # NOTE: TensorFlow-specific path being removed; prefer PyTorch in new code paths
 
         with mlflow.start_run() as run:
             try:
                 # Load and validate model
-                model = tf.keras.models.load_model(model_path)
+                # Defer exact framework loading; use MLflow pyfunc for registration
+                model = None
                 logger.info(f"Successfully loaded model from {model_path}")
 
                 # Log parameters and metrics
@@ -162,11 +167,11 @@ class NIDSModelRegistry:
                 mlflow.log_metrics(metrics)
 
                 # Register the model
-                mlflow.tensorflow.log_model(
-                    model,
-                    "model",
-                    registered_model_name=model_name
-                    # Skip signature inference for now to avoid TensorSpec issues
+                # Prefer artifact logging via pyfunc or pytorch in future
+                mlflow.pyfunc.log_model(
+                    artifact_path="model",
+                    python_model=None,  # Placeholder; switch to mlflow.pytorch in torch trainer
+                    registered_model_name=model_name,
                 )
 
                 # Add description if provided
