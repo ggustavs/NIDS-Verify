@@ -1574,7 +1574,7 @@ requires-dist = [
     { name = "numpy", specifier = ">=1.24.0" },
     { name = "onnx", specifier = ">=1.14.0" },
     { name = "pandas", specifier = ">=2.0.0" },
-    { name = "property-driven-ml", specifier = ">=0.1.1" },
+    { name = "property-driven-ml", specifier = "==0.2.1" },
     { name = "psutil", specifier = ">=5.9.0" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=7.0.0" },
     { name = "pytest-cov", marker = "extra == 'dev'", specifier = ">=4.0.0" },
@@ -2093,7 +2093,7 @@ wheels = [
 
 [[package]]
 name = "property-driven-ml"
-version = "0.1.1"
+version = "0.2.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "idx2numpy" },
@@ -2104,9 +2104,9 @@ dependencies = [
     { name = "torch" },
     { name = "torchvision" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/0d/c5/3c4edb7877184d1b22229a4fd31037955a05e12db6bdc9c1e2b9d3a4c9e0/property_driven_ml-0.1.1.tar.gz", hash = "sha256:c39909f1a349cc7f80ac652243f0317d1591edefa296020e99570cfb0bb84689", size = 16661, upload-time = "2025-08-18T15:34:39.424Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/d9/48/8c8ef20a571ab3f5304f5100c841b3d6769f21be7ed151d3e872da2dc97e/property_driven_ml-0.2.1.tar.gz", hash = "sha256:d195c67ccfe4438c6878f7f9ec3df7fdd543c1c56fafe14b2c9198c6f18c37b5", size = 28523, upload-time = "2025-08-21T17:15:24.92Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/03/34/0f6b95a34ae66413873d37cb901027d2290fdee52f9b52d212ed06153296/property_driven_ml-0.1.1-py3-none-any.whl", hash = "sha256:4d953ed64010c021f5f780dbf5733db849fe8bf804ed78009c2d05874a0c7a31", size = 17493, upload-time = "2025-08-18T15:34:37.782Z" },
+    { url = "https://files.pythonhosted.org/packages/f2/fb/2e0729dcb8d811db8cfc8340852c3368d26895294b0130bc1ee16da73d14/property_driven_ml-0.2.1-py3-none-any.whl", hash = "sha256:745b10f3ca622a8734badca3d395c462ca46abe57b323b86ba90a75c5a479bfd", size = 34606, upload-time = "2025-08-21T17:15:23.351Z" },
 ]
 
 [[package]]
