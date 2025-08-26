@@ -1,6 +1,6 @@
 """
 Data utilities
 """
-from .loader import DataLoader
+from .loader import DataLoader, _NDArrayDataset
 
-__all__ = ['DataLoader']
+__all__ = ['DataLoader', '_NDArrayDataset']

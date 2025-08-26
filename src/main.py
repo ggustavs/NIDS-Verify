@@ -5,13 +5,15 @@ Main entry point for NIDS training (PyTorch)
 import argparse
 import os
 import sys
+from typing import cast
 
 import torch
+from property_driven_ml.utils.factories import CreateEpsilonBall
 
 from src.config import config
-from src.data import DataLoader
+from src.data import DataLoader, _NDArrayDataset
 from src.models import create_model
-from src.training import train_adversarial, train_base
+from src.training import train_adversarial, train_base, train_constraint
 from src.utils.logging import get_logger, setup_logging
 from src.utils.performance import configure_torch_performance, log_system_info
 
@@ -32,8 +34,8 @@ def parse_arguments() -> argparse.Namespace:
         "--training-type",
         type=str,
         default="adversarial",
-        choices=["adversarial", "base"],
-        help="Type of training (adversarial or base)",
+        choices=["adversarial", "constraint", "base"],
+        help="Type of training (adversarial (with default hyperrectangles), constraint (with custom hyperrectangles and constraint loss), or base)",
     )
 
     parser.add_argument(
@@ -127,10 +129,16 @@ def main() -> int:
         # Load data
         logger.info("Loading data...")
         data_loader = DataLoader(data_dir=config.data.data_dir)
-        train_dataset, val_dataset, test_dataset, feature_names = data_loader.load_data(
+        train_loader, val_loader, test_loader, feature_names = data_loader.load_data(
             dataset=args.dataset
         )
         input_size = len(feature_names)
+        if args.training_type == "constraint":
+            logger.info("Making constraint training compliant DataLoader...")
+            train_factory, _ = CreateEpsilonBall(args.epsilon)
+            train_ds: _NDArrayDataset = cast(_NDArrayDataset, train_loader.dataset)
+            wrapper_train = train_factory(train_ds, train_ds.mean, train_ds.std)
+
         logger.info(f"Loaded data with {input_size} features")
 
         # Create model
@@ -149,22 +157,33 @@ def main() -> int:
             # No need to pass attack_rects explicitly - they're built into the research
             history = train_adversarial(
                 model=model,
-                train_dataset=train_dataset,
-                val_dataset=val_dataset,
+                train_loader=train_loader,
+                val_loader=val_loader,
                 attack_rects=None,
                 epochs=args.epochs,
                 steps_per_epoch=args.steps_per_epoch,
                 attack_pattern=args.attack_pattern,
             )
+        elif args.training_type == "constraint":
+            logger.info("Starting constraint-based adversarial training...")
 
+            history = train_constraint(
+                model=model,
+                train_loader=train_loader,
+                val_loader=val_loader,
+                attack_rects=wrapper_train,
+                epochs=args.epochs,
+                steps_per_epoch=args.steps_per_epoch,
+                attack_pattern=args.attack_pattern,
+            )
         else:  # base training
             logger.info("Starting base training...")
 
             # Train without adversarial examples
             history = train_base(
                 model=model,
-                train_dataset=train_dataset,
-                val_dataset=val_dataset,
+                train_loader=train_loader,
+                val_loader=val_loader,
                 epochs=args.epochs,
                 steps_per_epoch=args.steps_per_epoch,
             )
@@ -173,7 +192,7 @@ def main() -> int:
         logger.info("Evaluating on test set...")
         from src.training.trainer import evaluate_model as torch_evaluate
 
-        test_loss, test_acc = torch_evaluate(model, test_dataset)
+        test_loss, test_acc = torch_evaluate(model, test_loader)
         logger.info(f"Test Loss: {test_loss:.4f}, Test Accuracy: {test_acc:.4f}")
 
         # Log training summary

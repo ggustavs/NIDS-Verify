@@ -25,6 +25,16 @@ class _NDArrayDataset(Dataset):
         self.X = np.asarray(X, dtype=np.float32)
         self.y = np.asarray(y, dtype=np.int64)
 
+    @property
+    def mean(self):
+        """Return the mean of the features (per feature)."""
+        return torch.as_tensor(np.mean(self.X, axis=0))
+
+    @property
+    def std(self):
+        """Return the standard deviation of the features (per feature)."""
+        return torch.as_tensor(np.std(self.X, axis=0))
+
     def __len__(self) -> int:  # noqa: D401
         return self.X.shape[0]
 

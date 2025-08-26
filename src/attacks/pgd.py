@@ -192,7 +192,7 @@ def generate_pgd_adversarial_examples(
         attack_rects = create_attack_rectangles(
             attack_pattern=attack_pattern, input_size=input_size
         )
-        logger.info(f"Using research-based '{attack_pattern}' hyperrectangles for PGD attack")
+        logger.debug(f"Using research-based '{attack_pattern}' hyperrectangles for PGD attack")
 
     # Initialize adversarial examples with small random noise
     x_adv = x + torch.empty_like(x).uniform_(-epsilon / 10, epsilon / 10)

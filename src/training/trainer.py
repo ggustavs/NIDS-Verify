@@ -2,9 +2,10 @@
 Unified training interface for NIDS models (PyTorch)
 """
 
-from typing import Any
+from typing import Any, cast
 
 import numpy as np
+import property_driven_ml as pdml
 import torch
 import torch.nn as nn
 import torch.optim as optim
@@ -13,6 +14,7 @@ from tqdm import tqdm
 
 from src.attacks.pgd import generate_pgd_adversarial_examples
 from src.config import config
+from src.data.loader import _NDArrayDataset
 from src.utils.logging import get_logger
 from src.utils.performance import Timer
 
@@ -46,13 +48,14 @@ class NIDSTrainer:
 
     def train(
         self,
-        train_dataset: TorchDataLoader,
-        val_dataset: TorchDataLoader,
+        train_loader: TorchDataLoader,
+        val_loader: TorchDataLoader,
         training_type: str = "base",
         attack_rects: list[np.ndarray] | None = None,
         epochs: int | None = None,
         steps_per_epoch: int | None = None,
         attack_pattern: str = "hulk",
+        constraint: pdml.constraints.Constraint | None = None,
     ) -> dict[str, Any]:
         """Unified training method for both base and adversarial training."""
         epochs = epochs or config.training.epochs
@@ -71,7 +74,7 @@ class NIDSTrainer:
             "learning_rate": config.training.learning_rate,
             "batch_size": config.data.batch_size,
         }
-        if training_type == "adversarial":
+        if training_type == "adversarial" or training_type == "constraint":
             params.update(
                 {
                     "pgd_epsilon": config.training.pgd_epsilon,
@@ -79,6 +82,21 @@ class NIDSTrainer:
                     "pgd_alpha": config.training.pgd_alpha,
                     "using_research_hyperrectangles": attack_rects is None,
                 }
+            )
+        if training_type == "constraint" and constraint is not None:
+            temp_loader = TorchDataLoader(train_loader.dataset, batch_size=1, shuffle=False)
+            dataset: _NDArrayDataset = cast(_NDArrayDataset, temp_loader.dataset)
+            x0, _ = next(iter(temp_loader))
+            x0 = x0[0]  # Remove batch dimension
+            attack = pdml.training.attacks.PGD(
+                x0,  # Used to infer shape of data
+                pdml.logics.DL2(),
+                self.device,
+                config.training.pgd_steps,
+                10,  # n of random restarts - not relevant for this attack
+                config.training.pgd_alpha,
+                dataset.mean,
+                dataset.std,
             )
         logger.log_params(params)
 
@@ -98,24 +116,39 @@ class NIDSTrainer:
                 logger.info(f"Epoch {epoch + 1}/{epochs}")
                 epoch_loss: list[float] = []
                 epoch_acc: list[float] = []
+                epoch_satisfaction: list[float] = []
                 step_count = 0
                 global_step = epoch * steps_per_epoch
 
                 self.model.train()
-                for x_batch, y_batch in train_dataset:
+                for batch in train_loader:
                     if step_count >= steps_per_epoch:
                         break
                     global_step += 1
 
                     if training_type == "adversarial":
+                        x_batch, y_batch = batch
                         metrics = self._adversarial_train_step(
                             x_batch, y_batch, attack_rects, attack_pattern
                         )
+                    elif training_type == "constraint":
+                        x, y_target, lo, high = batch
+                        metrics = self._constraint_train_step(
+                            x,
+                            y_target,
+                            (lo, high),
+                            attack,
+                            constraint,  # type: ignore
+                        )
                     else:
+                        x_batch, y_batch = batch
                         metrics = self._base_train_step(x_batch, y_batch)
 
                     epoch_loss.append(float(metrics["loss"]))
-                    epoch_acc.append(float(metrics["accuracy"]))
+                    if training_type == "constraint":
+                        epoch_satisfaction.append(float(metrics["satisfaction"]))
+                    else:
+                        epoch_acc.append(float(metrics["accuracy"]))
 
                     if "gradients" in metrics and config.logging.gradient_logging_enabled:
                         grad_metrics = self._analyze_gradients(
@@ -138,7 +171,7 @@ class NIDSTrainer:
 
                 avg_loss = float(np.mean(epoch_loss)) if epoch_loss else 0.0
                 avg_acc = float(np.mean(epoch_acc)) if epoch_acc else 0.0
-                val_loss, val_acc = self._evaluate_model(val_dataset)
+                val_loss, val_acc = self._evaluate_model(val_loader)
 
                 history["loss"].append(avg_loss)
                 history["accuracy"].append(avg_acc)
@@ -243,6 +276,27 @@ class NIDSTrainer:
             accuracy = (preds == y_mixed).float().mean().item()
 
         return {"loss": float(loss.item()), "accuracy": float(accuracy), "gradients": gradients}
+
+    def _constraint_train_step(
+        self,
+        x: torch.Tensor,
+        y_target: torch.Tensor,
+        bounds: tuple[torch.Tensor, torch.Tensor],
+        attack: pdml.training.attacks.Attack,
+        constraint: pdml.constraints.Constraint,
+    ) -> dict[str, Any]:
+        """Single constraint training step (Torch)"""
+        x = x.to(self.device)
+        y_target = y_target.to(self.device)
+
+        # Apply constraint to input
+        adv = attack.attack(self.model, x, y_target, bounds, constraint)
+
+        loss_adv, sat_adv = constraint.eval(
+            self.model, x, adv, y_target, attack.logic, reduction="mean"
+        )
+
+        return {"loss": float(loss_adv.item()), "satisfaction": float(sat_adv.item())}
 
     def _analyze_gradients(self, gradients, step: int = 0, epoch: int = 0) -> dict[str, Any]:
         """Simplified gradient analysis focusing on actionable metrics"""
@@ -402,8 +456,8 @@ class NIDSTrainer:
 # Compatibility functions for existing code
 def train_adversarial(
     model: nn.Module,
-    train_dataset: TorchDataLoader,
-    val_dataset: TorchDataLoader,
+    train_loader: TorchDataLoader,
+    val_loader: TorchDataLoader,
     attack_rects: list[np.ndarray] | None = None,
     epochs: int | None = None,
     steps_per_epoch: int | None = None,
@@ -417,8 +471,8 @@ def train_adversarial(
     """
     trainer = NIDSTrainer(model)
     return trainer.train(
-        train_dataset,
-        val_dataset,
+        train_loader,
+        val_loader,
         "adversarial",
         attack_rects,
         epochs,
@@ -427,16 +481,35 @@ def train_adversarial(
     )
 
 
+def train_constraint(
+    model: nn.Module,
+    train_loader: TorchDataLoader,
+    val_loader: TorchDataLoader,
+    constraint: pdml.constraints.Constraint,
+    epochs: int | None = None,
+    steps_per_epoch: int | None = None,
+) -> dict[str, Any]:
+    trainer = NIDSTrainer(model)
+    return trainer.train(
+        train_loader,
+        val_loader,
+        "constraint",
+        epochs=epochs,
+        steps_per_epoch=steps_per_epoch,
+        constraint=constraint,
+    )
+
+
 def train_base(
     model: nn.Module,
-    train_dataset: TorchDataLoader,
-    val_dataset: TorchDataLoader,
+    train_loader: TorchDataLoader,
+    val_loader: TorchDataLoader,
     epochs: int | None = None,
     steps_per_epoch: int | None = None,
 ) -> dict[str, Any]:
     """Compatibility wrapper for base training"""
     trainer = NIDSTrainer(model)
-    return trainer.train(train_dataset, val_dataset, "base", None, epochs, steps_per_epoch)
+    return trainer.train(train_loader, val_loader, "base", None, epochs, steps_per_epoch)
 
 
 def evaluate_model(model: nn.Module, dataset: TorchDataLoader) -> tuple[float, float]:
