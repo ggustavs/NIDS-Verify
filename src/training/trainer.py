@@ -9,6 +9,7 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import DataLoader as TorchDataLoader
+from tqdm import tqdm
 
 from src.attacks.pgd import generate_pgd_adversarial_examples
 from src.config import config
@@ -92,7 +93,7 @@ class NIDSTrainer:
             "epoch_times": [],
         }
 
-        for epoch in range(epochs):
+        for epoch in tqdm(range(epochs)):
             with Timer() as epoch_timer:
                 logger.info(f"Epoch {epoch + 1}/{epochs}")
                 epoch_loss: list[float] = []

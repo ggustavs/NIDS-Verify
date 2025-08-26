@@ -42,6 +42,7 @@ class MLflowConfig:
 class ModelConfig:
     """Model configuration"""
 
+    input_size: int = 42
     model_type: str = "small"
     model_types: list[str] = field(
         default_factory=lambda: [
