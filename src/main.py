@@ -5,13 +5,12 @@ Main entry point for NIDS training (PyTorch)
 import argparse
 import os
 import sys
-from typing import cast
 
+import property_driven_ml as pdml
 import torch
-from property_driven_ml.utils.factories import CreateEpsilonBall
 
 from src.config import config
-from src.data import DataLoader, _NDArrayDataset
+from src.data import DataLoader
 from src.models import create_model
 from src.training import train_adversarial, train_base, train_constraint
 from src.utils.logging import get_logger, setup_logging
@@ -86,24 +85,51 @@ def parse_arguments() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def setup_device(device: str = "auto") -> None:
-    """Setup PyTorch device configuration"""
+def setup_device(device: str = "auto") -> torch.device:
+    """
+    Setup PyTorch device configuration using modern accelerator API
+
+    Args:
+        device: Device selection - "auto", "cpu", or "gpu"
+
+    Returns:
+        The selected torch.device
+    """
     logger = get_logger(__name__)
     configure_torch_performance()
 
     if device == "cpu":
         os.environ["CUDA_VISIBLE_DEVICES"] = ""
+        selected_device = torch.device("cpu")
         logger.info("Forcing CPU usage")
     elif device == "gpu":
-        if torch.cuda.is_available():
-            logger.info(f"Using GPU: {torch.cuda.get_device_name(0)}")
+        # Try to get current accelerator
+        current_accelerator = torch.accelerator.current_accelerator(check_available=True)
+        if current_accelerator is not None:
+            selected_device = current_accelerator
+            # Get device name if it's CUDA
+            if current_accelerator.type == "cuda":
+                device_name = torch.cuda.get_device_name(current_accelerator.index or 0)
+                logger.info(f"Using GPU: {device_name}")
+            else:
+                logger.info(f"Using accelerator: {current_accelerator}")
         else:
-            logger.warning("No GPUs found, falling back to CPU")
-    else:
-        if torch.cuda.is_available():
-            logger.info(f"Auto-selected GPU: {torch.cuda.get_device_name(0)}")
+            selected_device = torch.device("cpu")
+            logger.warning("No accelerators found, falling back to CPU")
+    else:  # auto
+        current_accelerator = torch.accelerator.current_accelerator(check_available=True)
+        if current_accelerator is not None:
+            selected_device = current_accelerator
+            if current_accelerator.type == "cuda":
+                device_name = torch.cuda.get_device_name(current_accelerator.index or 0)
+                logger.info(f"Auto-selected GPU: {device_name}")
+            else:
+                logger.info(f"Auto-selected accelerator: {current_accelerator}")
         else:
-            logger.info("No GPUs found, using CPU")
+            selected_device = torch.device("cpu")
+            logger.info("No accelerators found, using CPU")
+
+    return selected_device
 
 
 def main() -> int:
@@ -121,7 +147,7 @@ def main() -> int:
         logger.info(f"Arguments: {vars(args)}")
 
         # Setup device (PyTorch)
-        setup_device(args.device)
+        device = setup_device(args.device)
 
         # Log system information
         log_system_info()
@@ -133,17 +159,12 @@ def main() -> int:
             dataset=args.dataset
         )
         input_size = len(feature_names)
-        if args.training_type == "constraint":
-            logger.info("Making constraint training compliant DataLoader...")
-            train_factory, _ = CreateEpsilonBall(args.epsilon)
-            train_ds: _NDArrayDataset = cast(_NDArrayDataset, train_loader.dataset)
-            wrapper_train = train_factory(train_ds, train_ds.mean, train_ds.std)
-
         logger.info(f"Loaded data with {input_size} features")
 
         # Create model
         logger.info(f"Creating {args.model_type} model...")
         model = create_model(input_size, args.model_type)
+        model = model.to(device)  # Move model to the selected device
         logger.info("Model created successfully")
 
         # Training
@@ -171,10 +192,9 @@ def main() -> int:
                 model=model,
                 train_loader=train_loader,
                 val_loader=val_loader,
-                attack_rects=wrapper_train,
+                constraint=pdml.constraints.StandardRobustnessConstraint(device, epsilon=0.1),
                 epochs=args.epochs,
                 steps_per_epoch=args.steps_per_epoch,
-                attack_pattern=args.attack_pattern,
             )
         else:  # base training
             logger.info("Starting base training...")

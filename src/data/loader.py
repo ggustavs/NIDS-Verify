@@ -167,14 +167,14 @@ class DataLoader:
 
     def _create_loader(
         self, X: np.ndarray, y: np.ndarray, shuffle: bool = True
-    ) -> TorchDataLoader:
+    ) -> TorchDataLoader[_NDArrayDataset]:
         ds = _NDArrayDataset(X, y)
         return TorchDataLoader(
             ds,
             batch_size=config.data.batch_size,
             shuffle=shuffle,
             num_workers=min(4, os.cpu_count() or 1),
-            pin_memory=torch.cuda.is_available(),
+            pin_memory=torch.accelerator.is_available(),
         )
 
     def get_input_size(self) -> int:

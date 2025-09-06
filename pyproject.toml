@@ -20,7 +20,7 @@ dependencies = [
     "tqdm>=4.67.1",
     "scapy>=2.6.1",
     "torch>=2.2.0",
-    "property-driven-ml==0.2.2",
+    "property-driven-ml==0.2.7",
 ]
 
 [project.optional-dependencies]
@@ -146,3 +146,6 @@ ignore-module = true
 fail-under = 50
 exclude = ["tests", "nb", "scripts"]
 verbose = 0
+
+[tool.uv.sources]
+property-driven-ml = { url = "https://files.pythonhosted.org/packages/3d/63/e01965123b8ec0c2ad0543af0488884a4eeb033c21d08b09f50ea07e4f43/property_driven_ml-0.2.7-py3-none-any.whl" }

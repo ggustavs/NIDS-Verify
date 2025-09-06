@@ -32,7 +32,7 @@ class NIDSTrainer:
     ):
         self.model = model
         self.device = device or (
-            torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
+            torch.accelerator.current_accelerator(check_available=True) or torch.device("cpu")
         )
         self.model.to(self.device)
         self.optimizer = optimizer or optim.Adam(
@@ -80,20 +80,19 @@ class NIDSTrainer:
                     "pgd_epsilon": config.training.pgd_epsilon,
                     "pgd_steps": config.training.pgd_steps,
                     "pgd_alpha": config.training.pgd_alpha,
-                    "using_research_hyperrectangles": attack_rects is None,
+                    "using_research_hyperrectangles": attack_rects is None
+                    and training_type == "adversarial",
                 }
             )
         if training_type == "constraint" and constraint is not None:
-            temp_loader = TorchDataLoader(train_loader.dataset, batch_size=1, shuffle=False)
-            dataset: _NDArrayDataset = cast(_NDArrayDataset, temp_loader.dataset)
-            x0, _ = next(iter(temp_loader))
-            x0 = x0[0]  # Remove batch dimension
+            dataset: _NDArrayDataset = cast(
+                _NDArrayDataset, train_loader.dataset
+            )  # needed for type checking mean and std
             attack = pdml.training.attacks.PGD(
-                x0,  # Used to infer shape of data
                 pdml.logics.DL2(),
                 self.device,
                 config.training.pgd_steps,
-                10,  # n of random restarts - not relevant for this attack
+                10,  # n of random restarts
                 config.training.pgd_alpha,
                 dataset.mean,
                 dataset.std,
@@ -132,12 +131,11 @@ class NIDSTrainer:
                             x_batch, y_batch, attack_rects, attack_pattern
                         )
                     elif training_type == "constraint":
-                        x, y_target, lo, high = batch
+                        x, y_target = batch
                         metrics = self._constraint_train_step(
                             x,
                             y_target,
-                            (lo, high),
-                            attack,
+                            attack,  # type: ignore
                             constraint,  # type: ignore
                         )
                     else:
@@ -281,7 +279,6 @@ class NIDSTrainer:
         self,
         x: torch.Tensor,
         y_target: torch.Tensor,
-        bounds: tuple[torch.Tensor, torch.Tensor],
         attack: pdml.training.attacks.Attack,
         constraint: pdml.constraints.Constraint,
     ) -> dict[str, Any]:
@@ -290,7 +287,7 @@ class NIDSTrainer:
         y_target = y_target.to(self.device)
 
         # Apply constraint to input
-        adv = attack.attack(self.model, x, y_target, bounds, constraint)
+        adv = attack.attack(self.model, x, y_target, constraint)
 
         loss_adv, sat_adv = constraint.eval(
             self.model, x, adv, y_target, attack.logic, reduction="mean"

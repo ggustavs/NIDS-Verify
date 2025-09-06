@@ -36,14 +36,24 @@ def configure_torch_performance() -> None:
 def get_system_info() -> dict[str, Any]:
     """Get comprehensive system information"""
     memory = psutil.virtual_memory()
-    gpu_count = torch.cuda.device_count() if torch.cuda.is_available() else 0
+
+    # Use modern accelerator API
+    current_accelerator = torch.accelerator.current_accelerator(check_available=True)
+    gpu_count = 0
     gpu_devices = []
-    if gpu_count:
-        for i in range(gpu_count):
-            try:
-                gpu_devices.append(torch.cuda.get_device_name(i))
-            except Exception:
-                gpu_devices.append(f"cuda:{i}")
+
+    if current_accelerator is not None:
+        if current_accelerator.type == "cuda":
+            gpu_count = torch.cuda.device_count()
+            for i in range(gpu_count):
+                try:
+                    gpu_devices.append(torch.cuda.get_device_name(i))
+                except Exception:
+                    gpu_devices.append(f"cuda:{i}")
+        else:
+            # For other accelerator types (MPS, XPU, etc.)
+            gpu_count = 1
+            gpu_devices.append(str(current_accelerator))
 
     return {
         "platform": platform.platform(),

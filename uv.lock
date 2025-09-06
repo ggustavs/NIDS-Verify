@@ -1,5 +1,5 @@
 version = 1
-revision = 2
+revision = 3
 requires-python = ">=3.12"
 
 [[package]]
@@ -1574,7 +1574,7 @@ requires-dist = [
     { name = "numpy", specifier = ">=1.24.0" },
     { name = "onnx", specifier = ">=1.14.0" },
     { name = "pandas", specifier = ">=2.0.0" },
-    { name = "property-driven-ml", specifier = "==0.2.2" },
+    { name = "property-driven-ml", url = "https://files.pythonhosted.org/packages/3d/63/e01965123b8ec0c2ad0543af0488884a4eeb033c21d08b09f50ea07e4f43/property_driven_ml-0.2.7-py3-none-any.whl" },
     { name = "psutil", specifier = ">=5.9.0" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=7.0.0" },
     { name = "pytest-cov", marker = "extra == 'dev'", specifier = ">=4.0.0" },
@@ -2093,8 +2093,8 @@ wheels = [
 
 [[package]]
 name = "property-driven-ml"
-version = "0.2.2"
-source = { registry = "https://pypi.org/simple" }
+version = "0.2.7"
+source = { url = "https://files.pythonhosted.org/packages/3d/63/e01965123b8ec0c2ad0543af0488884a4eeb033c21d08b09f50ea07e4f43/property_driven_ml-0.2.7-py3-none-any.whl" }
 dependencies = [
     { name = "idx2numpy" },
     { name = "numpy" },
@@ -2104,10 +2104,27 @@ dependencies = [
     { name = "torch" },
     { name = "torchvision" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/e5/24/9897a8f25da0ddd806dd7342b985b723d4c09560ae7be76389877a5358b0/property_driven_ml-0.2.2.tar.gz", hash = "sha256:30fe3786648a80a3255065a1e8ea0ab7df6e7e89f86f71d43a74f8848d043722", size = 26874, upload-time = "2025-08-25T12:37:06.451Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/c1/3d/5afdedad493a7e013c5df1ece9d8ea9de64315df4d91bc9229713c730c38/property_driven_ml-0.2.2-py3-none-any.whl", hash = "sha256:35305a23d7bfd029957d267ee1cbf1dbe23441a8148846287519ac4d6cc27529", size = 31081, upload-time = "2025-08-25T12:37:04.819Z" },
+    { url = "https://files.pythonhosted.org/packages/3d/63/e01965123b8ec0c2ad0543af0488884a4eeb033c21d08b09f50ea07e4f43/property_driven_ml-0.2.7-py3-none-any.whl", hash = "sha256:f2352e5db88212530f289f7c1a2a95a499fe2466ee3e6d20ed97d5aa9cff1d4c" },
 ]
+
+[package.metadata]
+requires-dist = [
+    { name = "black", marker = "extra == 'dev'", specifier = ">=22.0" },
+    { name = "flake8", marker = "extra == 'dev'", specifier = ">=5.0" },
+    { name = "idx2numpy", specifier = ">=1.2.3" },
+    { name = "mypy", marker = "extra == 'dev'", specifier = ">=1.0" },
+    { name = "numpy", specifier = ">=2.3.2" },
+    { name = "onnx", specifier = ">=1.18.0" },
+    { name = "onnxruntime", specifier = ">=1.22.1" },
+    { name = "pandas", specifier = ">=2.3.1" },
+    { name = "pytest", marker = "extra == 'dev'", specifier = ">=7.0" },
+    { name = "pytest-cov", marker = "extra == 'dev'", specifier = ">=4.0" },
+    { name = "torch", specifier = ">=2.5.1" },
+    { name = "torchvision", specifier = ">=0.17.0" },
+    { name = "twine", marker = "extra == 'dev'", specifier = ">=6.1.0" },
+]
+provides-extras = ["dev"]
 
 [[package]]
 name = "protobuf"
