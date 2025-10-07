@@ -1,13 +1,21 @@
-import pandas as pd
 import property_driven_ml as pdml
 import torch
 
 
-class propertyGoodHTTP(pdml.constraints.Constraint):
+class PropertyGoodHTTP(pdml.constraints.Constraint):
+    """
+    Implements first property from paper
+    """
+
     def __init__(self, device: torch.device):
         super().__init__(device)
         ...
 
-class validInput(pdml.constraints.preconditions.Precondition):
+
+class ValidInput(pdml.constraints.preconditions.Precondition):
+    """
+    Helper precondition
+    """
+
     def get_precondition(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         return x
