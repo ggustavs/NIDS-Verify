@@ -8,7 +8,7 @@ import numpy as np
 import pandas as pd
 import torch
 from sklearn.model_selection import train_test_split
-from sklearn.preprocessing import StandardScaler
+from sklearn.preprocessing import MinMaxScaler
 from torch.utils.data import DataLoader as TorchDataLoader
 from torch.utils.data import Dataset
 
@@ -51,7 +51,7 @@ class DataLoader:
 
     def __init__(self, data_dir: Optional[str] = None):
         self.data_dir = data_dir or config.data.data_dir
-        self.scaler = StandardScaler()
+        self.scaler = MinMaxScaler()
         self.feature_names: List[str] = []
 
     def load_data(
@@ -93,7 +93,7 @@ class DataLoader:
         )
 
         if (X_train.min() < 0).any() or (X_train.max() > 1).any():
-            logger.warning("Feature values not in [0, 1]. Applying StandardScaler normalization.")
+            logger.warning("Feature values not in [0, 1]. Applying MinMaxScaler normalization.")
             X_train = self.scaler.fit_transform(X_train)
             X_val = self.scaler.transform(X_val)
             X_test = self.scaler.transform(X_test)
@@ -149,7 +149,7 @@ class DataLoader:
         )
 
         if (X_train.min() < 0).any() or (X_train.max() > 1).any():
-            logger.warning("Feature values not in [0, 1]. Applying StandardScaler normalization.")
+            logger.warning("Feature values not in [0, 1]. Applying MinMaxScaler normalization.")
             X_train = self.scaler.fit_transform(X_train)
             X_val = self.scaler.transform(X_val)
             X_test = self.scaler.transform(X_test)
