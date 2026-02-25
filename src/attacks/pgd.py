@@ -1,13 +1,8 @@
-"""
-PGD (Projected Gradient Descent) attack implementation (PyTorch)
-"""
+"""PGD (Projected Gradient Descent) attack implementation (PyTorch)"""
 
 import numpy as np
 import torch
-
-from src.utils.logging import get_logger
-
-logger = get_logger(__name__)
+from loguru import logger
 
 
 def project_to_hyperrectangle(
@@ -142,12 +137,22 @@ def pgd_attack_step(
     """
     x_orig = x.clone().detach()
     x = x.clone().detach().requires_grad_(True)
+
+    # Forward pass
     logits = model(x)
     loss = torch.nn.functional.cross_entropy(logits, y.long())
     loss.backward()
-    gradients = x.grad if x.grad is not None else torch.zeros_like(x)
-    gradients = gradients.detach()
-    x_adv = x + step_size * torch.sign(gradients)
+
+    # Extract and immediately detach gradients
+    gradients = x.grad.detach() if x.grad is not None else torch.zeros_like(x)
+
+    # Clear computation graph variables
+    del logits, loss, x
+    torch.cuda.empty_cache()
+
+    # Compute update
+    x_adv = x_orig + step_size * torch.sign(gradients)
+    del gradients
 
     # Project to constraints using appropriate method
     if use_research_bounds:
@@ -157,6 +162,7 @@ def pgd_attack_step(
         # Use perturbation bounds
         x_adv = project_to_hyperrectangle(x_adv, x_orig, attack_rects, absolute_bounds=False)
 
+    del x_orig
     return x_adv
 
 

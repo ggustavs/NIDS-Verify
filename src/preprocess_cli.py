@@ -26,6 +26,8 @@ def extract_features(args):
             sys.argv.extend(["--labels", args.labels])
         if args.output:
             sys.argv.extend(["--output", args.output])
+        if args.split_report:
+            sys.argv.extend(["--split-report", args.split_report])
         if args.quiet:
             sys.argv.append("--quiet")
 
@@ -111,8 +113,8 @@ Examples:
   # Extract features from PCAP
   nids-preprocess extract sample.pcap --labels flows.csv --window 10
 
-  # Process large PCAP in batches
-  nids-preprocess batch large.pcap output.csv --labels flows.csv --size-limit 1000m
+  # Process large PCAP in batches (2GB chunks by default)
+  nids-preprocess batch large.pcap output.csv --labels flows.csv
 
   # Generate comprehensive visualizations
   nids-preprocess visualize features.csv --report
@@ -124,8 +126,9 @@ Examples:
     # Extract command
     extract_parser = subparsers.add_parser("extract", help="Extract features from PCAP files")
     extract_parser.add_argument("pcap_file", help="Path to PCAP file")
-    extract_parser.add_argument("--labels", help="Path to labels CSV file")
+    extract_parser.add_argument("--labels", required=True, help="Path to labels CSV file")
     extract_parser.add_argument("--output", help="Output CSV file path")
+    extract_parser.add_argument("--split-report", help="Generate split flow report")
     extract_parser.add_argument("--window", type=int, default=10, help="Feature window size")
     extract_parser.add_argument("--quiet", action="store_true", help="Quiet mode")
 
@@ -136,7 +139,7 @@ Examples:
     batch_parser.add_argument("--labels", required=True, help="Labels CSV file")
     batch_parser.add_argument("--output-dir", default="splits", help="Temporary directory")
     batch_parser.add_argument("--window", type=int, default=10, help="Feature window size")
-    batch_parser.add_argument("--size-limit", default="1000m", help="Split size limit")
+    batch_parser.add_argument("--size-limit", default="2000m", help="Split size limit")
     batch_parser.add_argument("--no-cleanup", action="store_true", help="Keep temporary files")
     batch_parser.add_argument("--quiet", action="store_true", help="Quiet mode")
 

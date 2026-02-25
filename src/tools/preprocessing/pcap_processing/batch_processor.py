@@ -1,27 +1,70 @@
 """
-Batch PCAP Processing Utility
+Batch PCAP Processing Utility with Split Flow Tracking
 
 This module handles splitting large PCAP files and processing them in batches
-for scalable feature extraction. Includes automated cleanup and result aggregation.
+for scalable feature extraction. Tracks flows that are incomplete due to chunking.
 """
 
 import argparse
-import logging
 import os
 import re
 import shutil
 import subprocess  # nosec
 import sys
+from collections import defaultdict
 
 import pandas as pd
+from loguru import logger
+from tqdm import tqdm
 
-logger = logging.getLogger(__name__)
+
+def parse_arguments():
+    parser = argparse.ArgumentParser(
+        description="Split large PCAP files and extract features in batches with split flow tracking",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+    Examples:
+    # Process large PCAP with 2GB splits (default)
+    python batch_processor.py large_file.pcap output.csv --labels flows.csv
+
+    # Custom split size and window
+    python batch_processor.py huge_file.pcap output.csv --labels flows.csv --size-limit 500m --window 15
+
+    # Keep temporary files for debugging
+    python batch_processor.py file.pcap output.csv --labels flows.csv --no-cleanup
+    """,
+    )
+
+    parser.add_argument("input_pcap", help="Path to the input PCAP file")
+    parser.add_argument("output_csv", help="Path to save the combined output CSV file")
+    parser.add_argument("--labels", required=True, help="Path to the labels CSV file")
+    parser.add_argument(
+        "--output-dir",
+        default="splits",
+        help="Directory to store split PCAP files (default: splits)",
+    )
+    parser.add_argument(
+        "--window", type=int, default=10, help="Window size for feature extraction (default: 10)"
+    )
+    parser.add_argument(
+        "--size-limit",
+        default="2000m",
+        help="Size limit for each split, e.g., '2000m' for 2GB (default: 2000m)",
+    )
+    parser.add_argument(
+        "--no-cleanup",
+        action="store_true",
+        help="Keep temporary split files (useful for debugging)",
+    )
+    parser.add_argument("--quiet", action="store_true", help="Disable verbose output")
+
+    return parser.parse_args()
 
 
 class BatchPcapProcessor:
     """
     Handles large PCAP files by splitting them into manageable chunks
-    and processing each chunk independently.
+    and processing each chunk independently with split flow tracking.
     """
 
     def __init__(
@@ -30,7 +73,7 @@ class BatchPcapProcessor:
         labels_file: str,
         output_dir: str = "splits",
         window_size: int = 10,
-        size_limit: str | int = "1000m",
+        size_limit: str | int = "2000m",
         verbose: bool = True,
     ):
         """
@@ -41,7 +84,7 @@ class BatchPcapProcessor:
             labels_file: Path to CSV file with labels
             output_dir: Directory for temporary split files
             window_size: Feature extraction window size
-            size_limit: Size limit for each split (e.g., '1000m' or 1000 for MB)
+            size_limit: Size limit for each split (e.g., '2000m' or 2000 for MB)
             verbose: Enable detailed logging
         """
         self.input_pcap = input_pcap
@@ -51,12 +94,15 @@ class BatchPcapProcessor:
         self.size_limit = size_limit
         self.verbose = verbose
 
+        # Track split flows across chunks
+        self.split_flow_occurrences: dict[str, int] = defaultdict(int)
+
     def split_pcap(self) -> list[str]:
         """
         Split the large PCAP file into smaller chunks.
 
         Returns:
-            List of split file paths
+            List of split file paths in chronological order
         """
         # Validate prerequisites
         if not os.path.exists(self.input_pcap):
@@ -106,17 +152,16 @@ class BatchPcapProcessor:
         return split_files
 
     def _find_split_files(self) -> list[str]:
-        """Find and sort split files."""
+        """Find and sort split files chronologically."""
         split_files: list[str] = []
 
         for fname in os.listdir(self.output_dir):
             if fname.startswith("split_") and not fname.endswith(".csv"):
                 split_files.append(os.path.join(self.output_dir, fname))
 
-        # Sort files numerically if possible
+        # Sort files numerically
         def sort_key(filename: str):
             basename = os.path.basename(filename)
-            # Remove extension like ".1", ".pcap", etc., then capture trailing digits
             stem, _ext = os.path.splitext(basename)
             m = re.search(r"(\d+)$", stem)
             if m:
@@ -127,7 +172,7 @@ class BatchPcapProcessor:
             # tcpdump may create base file without suffix first
             if stem == "split_":
                 return 0
-            # As a fallback, try digits at end of full basename (e.g., split_.1)
+            # Fallback: try digits at end of full basename
             m2 = re.search(r"(\d+)$", basename)
             if m2:
                 try:
@@ -145,32 +190,42 @@ class BatchPcapProcessor:
         Process each split file and combine results.
 
         Args:
-            split_files: List of split PCAP file paths
+            split_files: List of split PCAP file paths in chronological order
 
         Returns:
-            Combined DataFrame with all extracted features
+            Combined DataFrame with all extracted features from complete flows
         """
         combined_df = pd.DataFrame()
-        processed_files: list[str] = []
+        all_split_flows: list[dict] = []
 
-        for i, split_file in enumerate(split_files, 1):
-            if self.verbose:
-                logger.info(f"Processing split {i}/{len(split_files)}: {split_file}")
+        pbar = tqdm(
+            enumerate(split_files, 1),
+            total=len(split_files),
+            desc="Processing splits",
+            unit="split",
+            disable=not self.verbose,
+        )
 
+        for i, split_file in pbar:
             try:
                 # Run feature extraction on this split
-                output_csv = self._process_single_split(split_file)
+                output_csv, split_report_csv = self._process_single_split(split_file, i)
 
                 if output_csv and os.path.exists(output_csv):
-                    # Read and append results
+                    # Read and append complete flows
                     df = pd.read_csv(output_csv)
                     combined_df = pd.concat([combined_df, df], ignore_index=True)
-                    processed_files.append(output_csv)
 
                     if self.verbose:
-                        logger.info(f"Split {i} processed: {len(df)} flows extracted")
-                else:
-                    logger.warning(f"No output generated for split {i}: {split_file}")
+                        pbar.set_postfix({"complete_flows": len(df), "total": len(combined_df)})
+
+                # Track split flows
+                if split_report_csv and os.path.exists(split_report_csv):
+                    split_df = pd.read_csv(split_report_csv)
+                    for _, row in split_df.iterrows():
+                        flow_id = row["Flow_ID"]
+                        self.split_flow_occurrences[flow_id] += 1
+                        all_split_flows.append(dict(row))
 
             except Exception as e:
                 logger.error(f"Failed to process split {i} ({split_file}): {e}")
@@ -178,23 +233,46 @@ class BatchPcapProcessor:
 
         if self.verbose:
             logger.info(
-                f"Combined {len(combined_df)} total flows from {len(processed_files)} splits"
+                f"Combined {len(combined_df)} complete flows from {len(split_files)} splits"
             )
+            logger.info(f"Tracked {len(self.split_flow_occurrences)} unique split flows")
+
+        # Save split flow analysis
+        if all_split_flows:
+            self._save_split_flow_analysis(all_split_flows)
 
         return combined_df
 
-    def _process_single_split(self, split_file: str) -> str | None:
-        """Process a single split file using the feature extractor."""
-        # Construct command to run feature extraction
+    def _process_single_split(
+        self, split_file: str, split_num: int
+    ) -> tuple[str | None, str | None]:
+        """
+        Process a single split file using the feature extractor.
+
+        Returns:
+            Tuple of (output_csv_path, split_report_csv_path)
+        """
+        # Construct module path
+        extractor_module = "src.tools.preprocessing.pcap_processing.extractor"
+
+        # Generate output file names
+        output_csv = os.path.splitext(split_file)[0] + "_features_with_labels.csv"
+        split_report_csv = os.path.splitext(split_file)[0] + "_split_flows.csv"
+
+        # Construct command
         cmd = [
             sys.executable,
             "-m",
-            "src.tools.preprocessing.pcap_processing.extractor",
+            extractor_module,
             split_file,
             "--labels",
             self.labels_file,
             "--window",
             str(self.window_size),
+            "--output",
+            output_csv,
+            "--split-report",
+            split_report_csv,
         ]
 
         if not self.verbose:
@@ -208,18 +286,33 @@ class BatchPcapProcessor:
                 text=True,
             )  # nosec
 
-            # Expected output CSV file
-            output_csv = os.path.splitext(split_file)[0] + "_features_with_labels.csv"
-
-            if os.path.exists(output_csv):
-                return output_csv
-            else:
-                logger.warning(f"Expected output file not found: {output_csv}")
-                return None
+            return (
+                output_csv if os.path.exists(output_csv) else None,
+                split_report_csv if os.path.exists(split_report_csv) else None,
+            )
 
         except subprocess.CalledProcessError as e:
-            logger.error(f"Feature extraction failed for {split_file}: {e}")
-            return None
+            logger.error(f"Feature extraction failed for split {split_num}: {e}")
+            return None, None
+
+    def _save_split_flow_analysis(self, all_split_flows: list[dict]) -> None:
+        """Save analysis of split flows across all chunks."""
+        analysis_file = os.path.join(self.output_dir, "split_flow_analysis.csv")
+
+        # Create DataFrame from all split flow occurrences
+        split_df = pd.DataFrame(all_split_flows)
+
+        # Add occurrence count
+        split_df["Split_Count"] = split_df["Flow_ID"].map(self.split_flow_occurrences)
+
+        # Sort by occurrence count (flows split across most chunks first)
+        split_df = split_df.sort_values("Split_Count", ascending=False)
+
+        split_df.to_csv(analysis_file, index=False)
+
+        if self.verbose:
+            logger.info(f"Split flow analysis saved to {analysis_file}")
+            logger.info(f"Most split flow appeared in {split_df['Split_Count'].max()} chunks")
 
     def cleanup_temp_files(self, split_files: list[str]) -> None:
         """Clean up temporary split files and intermediate CSVs."""
@@ -239,23 +332,13 @@ class BatchPcapProcessor:
 
         # Remove intermediate CSV files
         for fname in os.listdir(self.output_dir):
-            if fname.endswith("_features_with_labels.csv"):
+            if fname.endswith("_features_with_labels.csv") or fname.endswith("_split_flows.csv"):
+                file_path = os.path.join(self.output_dir, fname)
                 try:
-                    file_path = os.path.join(self.output_dir, fname)
                     os.remove(file_path)
                     files_removed += 1
                 except Exception as e:
                     logger.warning(f"Failed to remove {file_path}: {e}")
-
-        # Remove output directory if empty and it's the default
-        if self.output_dir == "splits" and os.path.exists(self.output_dir):
-            try:
-                if not os.listdir(self.output_dir):
-                    os.rmdir(self.output_dir)
-                    if self.verbose:
-                        logger.info("Removed empty splits directory")
-            except Exception as e:
-                logger.warning(f"Failed to remove directory {self.output_dir}: {e}")
 
         if self.verbose:
             logger.info(f"Cleaned up {files_removed} temporary files")
@@ -269,7 +352,7 @@ class BatchPcapProcessor:
             cleanup: Whether to clean up temporary files
 
         Returns:
-            Combined DataFrame with all features
+            Combined DataFrame with all features from complete flows
         """
         try:
             # Step 1: Split the PCAP file
@@ -300,52 +383,8 @@ class BatchPcapProcessor:
 
 def main():
     """Command-line interface for batch PCAP processing."""
-    parser = argparse.ArgumentParser(
-        description="Split large PCAP files and extract features in batches",
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog="""
-Examples:
-  # Process large PCAP with 1GB splits
-  python batch_processor.py large_file.pcap output.csv --labels flows.csv
 
-  # Custom split size and window
-  python batch_processor.py huge_file.pcap output.csv --labels flows.csv --size-limit 2000m --window 15
-
-  # Keep temporary files for debugging
-  python batch_processor.py file.pcap output.csv --labels flows.csv --no-cleanup
-        """,
-    )
-
-    parser.add_argument("input_pcap", help="Path to the input PCAP file")
-    parser.add_argument("output_csv", help="Path to save the combined output CSV file")
-    parser.add_argument("--labels", required=True, help="Path to the labels CSV file")
-    parser.add_argument(
-        "--output-dir",
-        default="splits",
-        help="Directory to store split PCAP files (default: splits)",
-    )
-    parser.add_argument(
-        "--window", type=int, default=10, help="Window size for feature extraction (default: 10)"
-    )
-    parser.add_argument(
-        "--size-limit",
-        default="1000m",
-        help="Size limit for each split, e.g., '1000m' for 1GB (default: 1000m)",
-    )
-    parser.add_argument(
-        "--no-cleanup",
-        action="store_true",
-        help="Keep temporary split files (useful for debugging)",
-    )
-    parser.add_argument("--quiet", action="store_true", help="Disable verbose output")
-
-    args = parser.parse_args()
-
-    # Set up logging
-    logging.basicConfig(
-        level=logging.INFO if not args.quiet else logging.WARNING,
-        format="%(asctime)s - %(levelname)s - %(message)s",
-    )
+    args = parse_arguments()
 
     try:
         processor = BatchPcapProcessor(
@@ -362,11 +401,9 @@ Examples:
         )
 
         if not combined_df.empty:
-            print("✅ Batch processing completed successfully!")
-            print(f"📁 Combined output saved to: {args.output_csv}")
-            print(f"📊 Total flows extracted: {len(combined_df)}")
+            logger.success("Batch processing completed successfully!")
         else:
-            print("⚠️ No features were extracted")
+            logger.warning("No features were extracted")
             return 1
 
     except Exception as e:

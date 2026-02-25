@@ -1,7 +1,7 @@
 repos:
   # General code quality hooks
   - repo: https://github.com/pre-commit/pre-commit-hooks
-    rev: v5.0.0
+    rev: v6.0.0
     hooks:
       - id: trailing-whitespace
       - id: end-of-file-fixer
@@ -18,7 +18,7 @@ repos:
 
   # Python formatting and linting with ruff
   - repo: https://github.com/astral-sh/ruff-pre-commit
-    rev: v0.12.7
+    rev: v0.15.2
     hooks:
       - id: ruff
         args: [--fix, --exit-non-zero-on-fix]
@@ -34,13 +34,13 @@ repos:
 
   # Clear notebook outputs (optional - good for research repos)
   - repo: https://github.com/kynan/nbstripout
-    rev: 0.8.1
+    rev: 0.9.1
     hooks:
       - id: nbstripout
 
   # Security scanning
   - repo: https://github.com/PyCQA/bandit
-    rev: 1.8.6
+    rev: 1.9.3
     hooks:
       - id: bandit
         args: [-c, pyproject.toml]

@@ -8,34 +8,48 @@ from pathlib import Path
 
 @dataclass
 class LoggingConfig:
-    """Logging configuration"""
+    """Logging configuration (file rotation, level, etc.)."""
 
     level: str = "INFO"
-    format: str = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
     log_dir: str = "./logs"
-    console_output: bool = True
-    file_output: bool = True
-
-    # Gradient logging configuration
-    gradient_logging_enabled: bool = True
-    gradient_console_logging: bool = True
-    gradient_csv_logging: bool = True
-    gradient_mlflow_logging: bool = True
-    gradient_log_frequency: int = 100  # Log to console every N steps
-    gradient_mlflow_frequency: int = 25  # Log to MLflow every N steps
-    gradient_health_threshold: float = 0.7  # Log immediately if health score < threshold
-    gradient_log_dir: str = "logs/gradients"
+    # loguru handles format and console/file output automatically
 
 
 @dataclass
 class MLflowConfig:
-    """MLflow configuration"""
+    """MLflow experiment tracking configuration."""
 
     enabled: bool = True
     experiment_name: str = "NIDS_Adversarial_Training"
-    tracking_uri: str | None = "file:./mlruns"  # Local file tracking
-    artifact_location: str | None = "./mlruns"  # Local artifacts
-    run_name_prefix: str = "nids_run"
+    tracking_uri: str | None = "file:./mlruns"
+    artifact_location: str | None = "./mlruns"
+
+
+@dataclass
+class LightningConfig:
+    """PyTorch Lightning trainer configuration."""
+
+    # Checkpointing
+    checkpoint_dir: str = "./models/checkpoints"
+    save_top_k: int = 3
+    save_last: bool = True
+
+    # Early stopping
+    enable_early_stopping: bool = True
+    early_stop_patience: int = 5
+    early_stop_min_delta: float = 0.0
+
+    # Validation
+    val_check_interval: float = 1.0  # Check validation every epoch
+
+    # Learning rate scheduling
+    enable_lr_scheduler: bool = False
+    lr_scheduler_type: str = "reduce_on_plateau"
+
+    # Progress/Logging
+    enable_progress_bar: bool = True
+    log_every_n_steps: int = 50
+    num_sanity_val_steps: int = 0  # Skip sanity check for faster startup
 
 
 @dataclass
@@ -73,14 +87,16 @@ class TrainingConfig:
     pgd_epsilon: float = 0.1
     pgd_steps: int = 3
     pgd_alpha: float = 0.01
+    vehicle_property: str = "propertyGoodHTTP"
+    lambda_val: float = 0.7
 
 
 @dataclass
 class DataConfig:
-    """Data processing configuration"""
+    """Data loading configuration."""
 
     data_dir: str = "data"
-    batch_size: int = 32
+    batch_size: int = 16
     shuffle_buffer_size: int = 10000
     pos_train: str = "CIC2017"
     neg_train: str = "CIC2017"
@@ -102,36 +118,34 @@ class DataConfig:
 
 @dataclass
 class ExperimentConfig:
-    """Experiment configuration"""
+    """Experiment tracking and artifact configuration."""
 
     model_save_path: str = "./models"
     attack_name: str = "DoS2"
-    save_adversarial_data: bool = True
-    adversarial_data_dir: str = "./adv_data_analysis"
 
 
 @dataclass
 class Config:
-    """Main configuration class"""
+    """Main configuration class combining all sub-configurations."""
 
     logging: LoggingConfig = field(default_factory=LoggingConfig)
     mlflow: MLflowConfig = field(default_factory=MLflowConfig)
+    lightning: LightningConfig = field(default_factory=LightningConfig)
     model: ModelConfig = field(default_factory=ModelConfig)
     training: TrainingConfig = field(default_factory=TrainingConfig)
     data: DataConfig = field(default_factory=DataConfig)
     experiment: ExperimentConfig = field(default_factory=ExperimentConfig)
 
     def __post_init__(self):
-        """Initialize derived values and create directories"""
+        """Initialize derived values and create directories."""
         # Calculate derived values
         self.model.input_size = 2 + self.data.pkts_length * 4
 
         # Ensure critical directories exist
         directories = [
             self.logging.log_dir,
-            self.logging.gradient_log_dir,
             self.experiment.model_save_path,
-            self.experiment.adversarial_data_dir,
+            self.lightning.checkpoint_dir,
             self.model.tf_model_dir,
             self.model.onnx_model_dir,
             "mlruns",  # MLflow directory

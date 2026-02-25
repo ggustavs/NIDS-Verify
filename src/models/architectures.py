@@ -1,22 +1,15 @@
-"""
-Model architectures for NIDS (PyTorch)
-"""
-from typing import Dict, Any
-
+"""Model architectures for NIDS (PyTorch)"""
 import torch
+from loguru import logger
 from torch import nn
 
 from src.config import config
-from src.utils.logging import get_logger
-from src.utils.performance import get_model_info
-
-logger = get_logger(__name__)
 
 
 class ModelFactory:
     """Factory for creating different model architectures"""
 
-    def __init__(self, input_size: int, seed: int = None):
+    def __init__(self, input_size: int, seed: int = 42):
         self.input_size = input_size
         self.seed = seed or config.model.initializer_seed
         torch.manual_seed(self.seed)
@@ -41,12 +34,6 @@ class ModelFactory:
 
         logger.info(f"Creating {model_type} model with input size {self.input_size}")
         model = model_creators[model_type]()
-
-        # Log model information
-        model_info = get_model_info(model)
-        logger.info(f"Model created - Parameters: {model_info.get('total_parameters', 'unknown'):,}")
-        logger.debug(f"Model info: {model_info}")
-
         return model
 
     def _create_small_model(self) -> nn.Module:

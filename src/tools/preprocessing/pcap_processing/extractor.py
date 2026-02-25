@@ -1,53 +1,124 @@
 """
-Feature Extraction Tool with Enhanced Timestamp Handling
+Feature Extraction Tool with Timestamp-Based Flow Matching
 
-This module extracts machine learning features from PCAP files and can link them
-with labels from CSV files. It handles the common problem of 12-hour timestamps
-without AM/PM indicators using advanced disambiguation techniques.
+This module extracts machine learning features from PCAP files using precise
+timestamp and duration information from CSV labels to accurately recreate flows.
 
 Key Features:
-- Multiple timestamp format support
-- Configurable timezone offset handling
-- Temporal proximity scoring for ambiguous timestamps
-- Flow-based packet grouping with timeout detection
+- Timestamp-based flow matching with microsecond precision
+- Flow completeness detection for chunked PCAP processing
+- Time-window based bidirectional packet matching
 - Comprehensive feature extraction for ML training
+- Memory-efficient batch processing
 
-Configuration:
-- CSV_PCAP_OFFSET_HOURS: Hours that CSV timestamps are behind PCAP timestamps (default: 0)
-- TIME_BUFFER_HOURS: Buffer time in hours for timestamp matching tolerance (default: 0.5)
+Workflow:
+1. Index all packets by their 5-tuple
+2. Read and sort flow labels by timestamp
+3. For each flow, match packets within its time window (timestamp to timestamp+duration)
+4. Determine packet direction relative to flow initiator (from Flow ID)
+5. Identify complete vs split flows (incomplete due to chunking)
+6. Extract features only from complete flows
 """
 
 import argparse
 import logging
 import os
 from collections import defaultdict
+from dataclasses import dataclass
 
 import pandas as pd
-import scapy.all as scapy
+from scapy.layers.inet import IP, TCP, UDP
+from scapy.layers.l2 import Ether
+from scapy.utils import RawPcapReader
 from tqdm import tqdm
-
-# Global configuration variables
-CSV_PCAP_OFFSET_HOURS = 0  # CSV timestamps are this many hours behind PCAP timestamps
-TIME_BUFFER_HOURS = 0.5  # Buffer time in hours for timestamp matching
 
 # Set up logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 
+def parse_arguments():
+    """Parse command-line arguments for feature extraction."""
+    parser = argparse.ArgumentParser(
+        description="Extract ML features from PCAP files with timestamp-based flow matching",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+        Examples:
+        # Basic feature extraction
+        python extractor.py sample.pcap --labels flows.csv --window 10
+
+        # Generate split flow report
+        python extractor.py sample.pcap --labels flows.csv --split-report splits.csv
+
+        # Quiet mode
+        python extractor.py sample.pcap --labels flows.csv --quiet
+        """,
+    )
+    parser.add_argument("pcap_file", help="Path to the PCAP file")
+    parser.add_argument("--labels", required=True, help="Path to the labels CSV file")
+    parser.add_argument(
+        "--window", type=int, default=10, help="Window size for feature extraction (default: 10)"
+    )
+    parser.add_argument("--output", help="Output CSV file path (auto-generated if not specified)")
+    parser.add_argument("--split-report", help="Generate report of split flows to this file")
+    parser.add_argument("--quiet", action="store_true", help="Disable verbose output")
+
+    return parser.parse_args()
+
+
+@dataclass
+class FlowInfo:
+    """Information about a flow from the CSV labels."""
+
+    flow_id: str
+    src_ip: str
+    dst_ip: str
+    src_port: int
+    dst_port: int
+    protocol: int
+    timestamp: float  # Start time in Unix seconds
+    duration: float  # Duration in seconds
+    fwd_packets: int
+    bwd_packets: int
+    total_packets: int
+    label: str
+    is_complete: bool = True  # Whether all packets were captured
+
+
+def parse_flow_id(flow_id: str) -> tuple[str, str, int, int, int]:
+    """Parse Flow ID into 5-tuple components."""
+    parts = flow_id.split("-")
+    if len(parts) != 5:
+        raise ValueError(f"Invalid Flow ID format: {flow_id}")
+    src_ip, dst_ip = parts[0], parts[1]
+    src_port, dst_port, protocol = int(parts[2]), int(parts[3]), int(parts[4])
+    return src_ip, dst_ip, src_port, dst_port, protocol
+
+
+def normalize_flow_duration(raw_value: float | None) -> float:
+    """Normalize flow duration from CSV to seconds (CIC CSV stores microseconds)."""
+    if raw_value is None or pd.isna(raw_value):
+        return 0.0
+    try:
+        val = float(raw_value)
+        # CIC CSV durations are in microseconds
+        return val / 1_000_000.0
+    except (TypeError, ValueError):
+        return 0.0
+
+
 class FeatureExtractor:
     """
-    Advanced feature extractor for NIDS packet data.
+    Timestamp-based feature extractor for NIDS packet data.
 
-    Handles PCAP file processing, flow extraction, timestamp disambiguation,
-    and ML feature generation for network intrusion detection systems.
+    Handles PCAP file processing with precise flow matching using CSV labels.
     """
 
     def __init__(
         self,
         pcap_file: str,
+        labels_file: str,
         window_size: int = 10,
-        labels_file: str | None = None,
         verbose: bool = True,
     ):
         """
@@ -55,466 +126,398 @@ class FeatureExtractor:
 
         Args:
             pcap_file: Path to the PCAP file to process
+            labels_file: Path to CSV file with flow labels (required)
             window_size: Number of packets to include in feature window
-            labels_file: Optional path to CSV file with flow labels
             verbose: Enable detailed progress output
         """
         self.pcap_file = pcap_file
-        self.window_size = window_size
         self.labels_file = labels_file
-        self.flows: dict[tuple, list] = defaultdict(list)
-        self.df_flows: pd.DataFrame | None = None
+        self.window_size = window_size
         self.verbose = verbose
-        self.flow_nr: dict[tuple, int] = defaultdict(int)
+
+        # Packet storage: indexed by 5-tuple for fast lookup
+        # Stores packets in both possible directions of the 5-tuple
+        self.packets_by_tuple: dict[tuple, list[tuple]] = defaultdict(list)
+
+        # Flow storage: Complete flows ready for feature extraction
+        self.complete_flows: dict[str, tuple[FlowInfo, list[tuple]]] = {}
+        self.split_flows: dict[str, FlowInfo] = {}  # Incomplete flows
 
         if verbose:
             logger.info(f"Initialized FeatureExtractor for {pcap_file}")
-            logger.info(f"Window size: {window_size}, Labels: {labels_file is not None}")
+            logger.info(f"Labels: {labels_file}, Window size: {window_size}")
 
     def process_packets(self) -> None:
         """
-        Process all packets in the PCAP file and group them into flows.
+        Index all packets by their 5-tuple using fast RawPcapReader.
 
-        Handles flow detection, timeout-based flow splitting, and packet
-        direction determination following CICFlowMeter conventions.
+        Direction is determined later when matching against flows using time windows.
+        Uses batch processing with RawPcapReader for optimal memory/speed balance.
         """
+        if self.verbose:
+            logger.info(f"Processing PCAP: {self.pcap_file}")
+
+        packet_count = 0
+        # Use RawPcapReader for faster processing - only parse packets we need
         try:
-            packets = scapy.rdpcap(self.pcap_file)
+            for raw_data, metadata in tqdm(
+                RawPcapReader(self.pcap_file),
+                desc="Indexing packets",
+                unit="pkt",
+                disable=not self.verbose,
+            ):
+                # Parse packet from raw data
+                try:
+                    pkt = Ether(raw_data)
+                except Exception:  # nosec B112
+                    continue  # Skip malformed packets
+
+                if IP not in pkt:
+                    continue
+
+                packet_data = self._extract_packet_info(pkt, metadata)
+                if packet_data is None:
+                    continue
+
+                five_tuple, packet_record = packet_data
+                self.packets_by_tuple[five_tuple].append(packet_record)
+                packet_count += 1
+
         except Exception as e:
-            raise RuntimeError(f"Failed to read PCAP file {self.pcap_file}") from e
+            raise RuntimeError(f"Failed to process PCAP file {self.pcap_file}") from e
 
-        timeout_threshold = 300  # Timeout threshold in seconds (CICFlowMeter default)
-
-        for pkt in tqdm(
-            packets, desc="Processing packets", unit="packet", disable=not self.verbose
-        ):
-            if scapy.IP not in pkt:
-                continue
-
-            # Extract packet metadata
-            packet_info = self._extract_packet_info(pkt)
-            if packet_info is None:
-                continue
-
-            flow_key, timestamp, proto, pkt_size, pkt_flags, direction = packet_info
-
-            # Handle flow splitting logic
-            if self.labels_file is None:
-                full_flow_key = self._handle_flow_timeout(flow_key, timestamp, timeout_threshold)
-                target_flows = self.flows[full_flow_key]
-            else:
-                # Use labels file to split flows
-                target_flows = self.flows[flow_key]
-
-            # Add packet to flow
-            target_flows.append((timestamp, proto, pkt_size, pkt_flags, direction))
-
-        # Sort packets within each flow by timestamp
-        for flow_key in self.flows:
-            self.flows[flow_key].sort(key=lambda pkt: pkt[0])
-
-        if self.labels_file:
-            self.link_labels()
+        # Sort packets by timestamp for each 5-tuple
+        if self.verbose:
+            logger.info("Sorting packets by timestamp...")
+        for five_tuple in self.packets_by_tuple:
+            self.packets_by_tuple[five_tuple].sort(key=lambda pkt: pkt[0])
 
         if self.verbose:
-            logger.info(f"Processed {len(packets)} packets from {self.pcap_file}")
-            logger.info(f"Total flows extracted: {len(self.flows)}")
+            logger.info(f"Indexed {packet_count:,} packets")
+            logger.info(f"Unique 5-tuples: {len(self.packets_by_tuple)}")
 
-    def _extract_packet_info(self, pkt) -> tuple | None:
-        """Extract key information from a packet."""
-        src_ip = pkt[scapy.IP].src
-        dst_ip = pkt[scapy.IP].dst
-        timestamp = float(pkt.time) if pkt.time else 0
-        proto = pkt[scapy.IP].proto
-        pkt_size = len(pkt)
+    def _extract_packet_info(self, pkt, metadata=None) -> tuple[tuple, tuple] | None:
+        """
+        Extract packet information and organize by 5-tuple.
 
-        # Extract port information
-        if scapy.TCP in pkt:
-            src_port = pkt[scapy.TCP].sport
-            dst_port = pkt[scapy.TCP].dport
-            pkt_flags = int(pkt[scapy.TCP].flags)
-        elif scapy.UDP in pkt:
-            src_port = pkt[scapy.UDP].sport
-            dst_port = pkt[scapy.UDP].dport
+        Args:
+            pkt: Parsed packet
+            metadata: Tuple of (sec, usec, caplen, length) from RawPcapReader
+
+        Returns:
+            Tuple of (5-tuple, packet_record) where packet_record is
+            (timestamp, protocol, size, flags), or None if packet is invalid.
+        """
+        src_ip = pkt[IP].src
+        dst_ip = pkt[IP].dst
+
+        # Get timestamp from metadata if available (RawPcapReader), otherwise from packet
+        if metadata is not None:
+            # RawPcapReader returns variable-length metadata tuples depending on PCAP/PCAPNG.
+            sec = metadata[0]
+            usec = metadata[1]
+            timestamp = float(sec) + float(usec) / 1_000_000.0
+        else:
+            timestamp = float(pkt.time) if pkt.time else 0.0
+
+        protocol = pkt[IP].proto
+        # Use IP packet length (excludes Ethernet header) to match spec sizes (e.g., 40/52 bytes).
+        pkt_size = len(pkt[IP])
+
+        # Extract port and flags information
+        if TCP in pkt:
+            src_port = pkt[TCP].sport
+            dst_port = pkt[TCP].dport
+            # Mask to 6-bit TCP flags (FIN,SYN,RST,PSH,ACK,URG) to avoid ECN/NS bits.
+            pkt_flags = int(pkt[TCP].flags) & 0x3F
+        elif UDP in pkt:
+            src_port = pkt[UDP].sport
+            dst_port = pkt[UDP].dport
             pkt_flags = 0
         else:
-            src_port = None
-            dst_port = None
-            pkt_flags = 0
+            return None
 
         if src_port is None or dst_port is None:
             return None
 
-        flow_key = (src_ip, dst_ip, src_port, dst_port, proto)
-        direction = 0  # Outgoing direction by default
+        five_tuple = (src_ip, dst_ip, src_port, dst_port, protocol)
+        packet_record = (timestamp, protocol, pkt_size, pkt_flags)
 
-        # Check for reverse flow (bidirectional flow handling)
-        reverse_flow_key = (dst_ip, src_ip, dst_port, src_port, proto)
-        if reverse_flow_key in self.flow_nr and flow_key not in self.flow_nr:
-            flow_key = reverse_flow_key
-            direction = 1  # Incoming direction
+        return five_tuple, packet_record
 
-        return flow_key, timestamp, proto, pkt_size, pkt_flags, direction
-
-    def _handle_flow_timeout(
-        self, flow_key: tuple, timestamp: float, timeout_threshold: float
-    ) -> tuple:
-        """Handle flow splitting based on timeout threshold."""
-        full_flow_key = flow_key + (self.flow_nr[flow_key],)
-
-        # Check for new flow conditions
-        if full_flow_key in self.flows and self.flows[full_flow_key]:
-            last_pkt = self.flows[full_flow_key][-1]
-            last_timestamp = last_pkt[0]
-
-            # Split flow if timeout is exceeded
-            if timestamp - last_timestamp > timeout_threshold:
-                self.flow_nr[flow_key] += 1
-                full_flow_key = flow_key + (self.flow_nr[flow_key],)
-
-        return full_flow_key
-
-    def _parse_timestamp_with_ambiguity(self, timestamp_str: str) -> list[float]:
+    def match_flows_with_labels(self) -> None:
         """
-        Parse timestamp string and handle 12-hour format ambiguity.
+        Match packets to flows using precise timestamps and durations from CSV.
 
-        Returns list of possible timestamp interpretations (Unix timestamps).
-        Applies configurable offset to account for timezone differences.
+        Identifies complete vs split flows based on packet counts and time windows.
         """
-        dt_original = None
-
-        # List of formats to try, in order of preference
-        formats_to_try = [
-            "%Y-%m-%d %H:%M:%S.%f",  # 2017-07-05 11:42:42.790920
-            "%Y-%m-%d %H:%M:%S",  # 2017-07-05 11:42:42
-            "%d/%m/%Y %H:%M",  # Original format
-            "%m/%d/%Y %H:%M",  # Alternative date format
-        ]
-
-        for fmt in formats_to_try:
-            try:
-                dt_original = pd.to_datetime(timestamp_str, format=fmt)
-                break
-            except pd.errors.ParserError:
-                continue
-
-        # If all specific formats fail, try pandas auto-detection
-        if dt_original is None:
-            try:
-                dt_original = pd.to_datetime(timestamp_str)
-            except pd.errors.ParserError:
-                if self.verbose:
-                    logger.warning(f"Could not parse timestamp {timestamp_str}")
-                return [0]
-
-        # Apply configurable offset (CSV is behind PCAP)
-        pcap_dt = dt_original + pd.Timedelta(hours=CSV_PCAP_OFFSET_HOURS)
-        return [pcap_dt.timestamp()]
-
-    def _find_best_packet_match(
-        self,
-        packets: list,
-        possible_timestamps: list[float],
-        expected_packet_count: int,
-        flow_duration: float | None,
-    ) -> dict | None:
-        """
-        Find the best matching packet sequence using multiple scoring criteria.
-
-        Uses temporal proximity, packet count matching, flow duration, and
-        consistency scoring to disambiguate between timestamp possibilities.
-        """
-        best_match = None
-        best_score = float("-inf")
-
-        packet_times = [pkt[0] for pkt in packets]
-
-        for timestamp in possible_timestamps:
-            if not packet_times:
-                continue
-
-            # Find the closest packet to our timestamp
-            time_diffs = [abs(pkt_time - timestamp) for pkt_time in packet_times]
-            closest_idx = time_diffs.index(min(time_diffs))
-
-            # Extract flow starting from closest packet
-            end_idx = min(closest_idx + expected_packet_count, len(packets))
-            candidate_flow = packets[closest_idx:end_idx]
-
-            if not candidate_flow:
-                continue
-
-            # Calculate comprehensive match score
-            score = self._calculate_match_score(
-                candidate_flow, timestamp, expected_packet_count, flow_duration, time_diffs
-            )
-
-            if score > best_score:
-                best_score = score
-                best_match = {
-                    "flow": candidate_flow,
-                    "start_idx": closest_idx,
-                    "end_idx": end_idx,
-                    "timestamp": timestamp,
-                    "score": score,
-                }
-
-        return best_match
-
-    def _calculate_match_score(
-        self,
-        candidate_flow: list,
-        timestamp: float,
-        expected_packet_count: int,
-        flow_duration: float | None,
-        time_diffs: list[float],
-    ) -> float:
-        """Calculate comprehensive matching score for timestamp disambiguation."""
-        score = 0
-
-        # 1. Temporal proximity score (closer timestamp = higher score)
-        min_time_diff = min(time_diffs)
-        temporal_score = 1.0 / (1.0 + min_time_diff)
-        score += temporal_score * 100
-
-        # 2. Packet count match score
-        actual_count = len(candidate_flow)
-        count_diff = abs(actual_count - expected_packet_count)
-        count_score = 1.0 / (1.0 + count_diff)
-        score += count_score * 50
-
-        # 3. Flow duration match score (if available)
-        if flow_duration and len(candidate_flow) > 1:
-            actual_duration = candidate_flow[-1][0] - candidate_flow[0][0]
-            duration_diff = abs(actual_duration - flow_duration)
-            duration_score = 1.0 / (1.0 + duration_diff)
-            score += duration_score * 25
-
-        # 4. Consistency score - prefer flows without large gaps
-        if len(candidate_flow) > 1:
-            inter_arrival_times = [
-                candidate_flow[i][0] - candidate_flow[i - 1][0]
-                for i in range(1, len(candidate_flow))
-            ]
-            avg_iat = sum(inter_arrival_times) / len(inter_arrival_times)
-            iat_variance = sum((iat - avg_iat) ** 2 for iat in inter_arrival_times) / len(
-                inter_arrival_times
-            )
-            consistency_score = 1.0 / (1.0 + iat_variance)
-            score += consistency_score * 25
-
-        return score
-
-    def _get_pcap_time_range(self) -> tuple[float | None, float | None]:
-        """Determine the time range of packets in the current PCAP."""
-        all_timestamps = []
-        for flow_packets in self.flows.values():
-            for pkt in flow_packets:
-                timestamp = float(pkt[0])  # timestamp is first element
-                all_timestamps.append(timestamp)
-
-        if not all_timestamps:
-            return None, None
-
-        return min(all_timestamps), max(all_timestamps)
-
-    def _filter_csv_by_time_range(
-        self, labels_df: pd.DataFrame, pcap_min_time: float | None, pcap_max_time: float | None
-    ) -> pd.DataFrame:
-        """Filter CSV rows to match PCAP time range with configurable buffer."""
-        if pcap_min_time is None or pcap_max_time is None:
-            return labels_df
-
-        # Add configurable buffer time
-        buffer_seconds = TIME_BUFFER_HOURS * 3600
-        search_min_time = pcap_min_time - buffer_seconds
-        search_max_time = pcap_max_time + buffer_seconds
-
-        filtered_rows = []
-
-        for _, row in tqdm(
-            labels_df.iterrows(),
-            total=len(labels_df),
-            desc="Filtering CSV rows by time range",
-            unit="row",
-            disable=not self.verbose,
-        ):
-            timestamp_str = str(row["Timestamp"])
-            possible_timestamps = self._parse_timestamp_with_ambiguity(timestamp_str)
-
-            # Check if any timestamp interpretation falls within range
-            if any(search_min_time <= ts <= search_max_time for ts in possible_timestamps):
-                filtered_rows.append(row)
-
-        if not filtered_rows:
-            if self.verbose:
-                logger.warning(
-                    f"No CSV rows found in PCAP time range "
-                    f"[{pd.to_datetime(search_min_time, unit='s')} to "
-                    f"{pd.to_datetime(search_max_time, unit='s')}] "
-                    f"(buffer: {TIME_BUFFER_HOURS}h, offset: {CSV_PCAP_OFFSET_HOURS}h)"
-                )
-            return pd.DataFrame()
-
-        filtered_df = pd.DataFrame(filtered_rows)
-
-        if self.verbose:
-            logger.info(
-                f"Filtered CSV: {len(filtered_df)}/{len(labels_df)} rows within PCAP time range"
-            )
-
-        return filtered_df
-
-    def link_labels(self) -> None:
-        """Link flows with labels from CSV file using advanced matching."""
+        # Load and sort labels by timestamp
         try:
             labels_df = pd.read_csv(self.labels_file)
             labels_df.columns = labels_df.columns.str.strip()
         except Exception as e:
             raise RuntimeError(f"Failed to read labels file {self.labels_file}") from e
 
-        # Get PCAP time range and filter CSV
-        pcap_min_time, pcap_max_time = self._get_pcap_time_range()
+        # Parse timestamps
+        labels_df["Timestamp_Unix"] = (
+            pd.to_datetime(labels_df["Timestamp"], format="%Y-%m-%d %H:%M:%S.%f").astype("int64")
+            / 1e9
+        )
 
-        if self.verbose and pcap_min_time is not None:
+        # Sort by timestamp - keep original index to maintain label row references
+        labels_df = labels_df.sort_values("Timestamp_Unix")
+
+        if self.verbose:
+            logger.info(f"Loaded {len(labels_df)} flow labels")
             logger.info(
-                f"PCAP time range: {pd.to_datetime(pcap_min_time, unit='s')} to "
-                f"{pd.to_datetime(pcap_max_time, unit='s')}"
+                f"Time range: {labels_df['Timestamp'].iloc[0]} to {labels_df['Timestamp'].iloc[-1]}"
             )
 
-        filtered_labels_df = self._filter_csv_by_time_range(labels_df, pcap_min_time, pcap_max_time)
+        # Get PCAP time range
+        pcap_min, pcap_max = self._get_pcap_time_range()
+        if self.verbose and pcap_min is not None and pcap_max is not None:
+            logger.info(
+                f"PCAP time range: {pd.to_datetime(pcap_min, unit='s')} to "
+                f"{pd.to_datetime(pcap_max, unit='s')}"
+            )
 
-        if filtered_labels_df.empty:
-            if self.verbose:
-                logger.warning("No CSV rows match PCAP time range. Skipping label matching.")
-            return
+        # Get column indices for fast positional access with itertuples
+        col_index = {col: idx for idx, col in enumerate(labels_df.columns)}
 
-        # Process flow matching
-        new_flows = defaultdict(list)
-        matched_flows = 0
-        ambiguous_matches = 0
+        # Match each flow from labels using itertuples (much faster than iterrows)
+        # Keep index=True to track which label row each flow came from
+        for row in tqdm(
+            labels_df.itertuples(index=True),
+            total=len(labels_df),
+            desc="Matching flows",
+            unit="flow",
+            disable=not self.verbose,
+        ):
+            label_idx = int(row.Index)  # type: ignore[arg-type]
+            flow_info = self._create_flow_info_from_tuple(row, col_index, label_idx)
+            matched_packets = self._match_flow_packets(flow_info, pcap_min, pcap_max)
 
-        flow_items = list(self.flows.items())
-        for flow_key, packets in tqdm(
-            flow_items, desc="Matching flows with labels", unit="flow", disable=not self.verbose
+            if matched_packets is not None:
+                if flow_info.is_complete:
+                    # Use unique key: label_idx to avoid overwriting flows with same 5-tuple
+                    self.complete_flows[str(label_idx)] = (flow_info, matched_packets)
+                else:
+                    self.split_flows[str(label_idx)] = flow_info
+
+        if self.verbose:
+            logger.info(f"Matched {len(self.complete_flows)} complete flows")
+            logger.info(f"Detected {len(self.split_flows)} split/incomplete flows")
+
+    def _create_flow_info_from_tuple(self, row, col_index: dict, label_idx: int) -> FlowInfo:
+        """Create FlowInfo object from namedtuple row using positional access."""
+        # Access by position to avoid itertuples column name mangling
+        # Note: when index=True, itertuples adds Index as first field, so adjust indices
+        flow_id = str(row[col_index["Flow ID"] + 1])  # +1 for Index field
+        src_ip, dst_ip, src_port, dst_port, protocol = parse_flow_id(flow_id)
+
+        timestamp = float(row[col_index["Timestamp_Unix"] + 1])
+        duration = normalize_flow_duration(row[col_index["Flow Duration"] + 1])
+        fwd_packets = int(row[col_index["Total Fwd Packet"] + 1])
+        bwd_packets = int(row[col_index["Total Bwd packets"] + 1])
+        total_packets = fwd_packets + bwd_packets
+        label = str(row[col_index["Label"] + 1])
+
+        return FlowInfo(
+            flow_id=f"{label_idx}:{flow_id}",  # Unique ID with label row index
+            src_ip=src_ip,
+            dst_ip=dst_ip,
+            src_port=src_port,
+            dst_port=dst_port,
+            protocol=protocol,
+            timestamp=timestamp,
+            duration=duration,
+            fwd_packets=fwd_packets,
+            bwd_packets=bwd_packets,
+            total_packets=total_packets,
+            label=label,
+        )
+
+    def _create_flow_info(self, row: pd.Series) -> FlowInfo:
+        """Create FlowInfo object from CSV row."""
+        flow_id = str(row["Flow ID"])
+        src_ip, dst_ip, src_port, dst_port, protocol = parse_flow_id(flow_id)
+
+        timestamp = float(row["Timestamp_Unix"])
+        duration = normalize_flow_duration(row.get("Flow Duration"))
+        fwd_packets = int(row.get("Total Fwd Packet", 0))
+        bwd_packets = int(row.get("Total Bwd packets", 0))
+        total_packets = fwd_packets + bwd_packets
+        label = str(row.get("Label", "UNKNOWN"))
+
+        return FlowInfo(
+            flow_id=flow_id,
+            src_ip=src_ip,
+            dst_ip=dst_ip,
+            src_port=src_port,
+            dst_port=dst_port,
+            protocol=protocol,
+            timestamp=timestamp,
+            duration=duration,
+            fwd_packets=fwd_packets,
+            bwd_packets=bwd_packets,
+            total_packets=total_packets,
+            label=label,
+        )
+
+    def _match_flow_packets(
+        self, flow_info: FlowInfo, pcap_min: float | None, pcap_max: float | None
+    ) -> list[tuple] | None:
+        """
+        Match packets to a flow using its time window.
+
+        Searches for packets in both directions of the 5-tuple that fall within
+        the flow's time window (timestamp to timestamp+duration). Direction is
+        determined relative to the Flow ID (who initiated the connection).
+
+        Returns:
+            List of packets with direction markers: (timestamp, proto, size, flags, direction)
+            where direction=0 means forward (matches Flow ID), direction=1 means backward.
+            Returns None if no packets match.
+        """
+        # Flow ID defines forward direction (initiator -> responder)
+        fwd_tuple = (
+            flow_info.src_ip,
+            flow_info.dst_ip,
+            flow_info.src_port,
+            flow_info.dst_port,
+            flow_info.protocol,
+        )
+        # Reverse direction (responder -> initiator)
+        bwd_tuple = (
+            flow_info.dst_ip,
+            flow_info.src_ip,
+            flow_info.dst_port,
+            flow_info.src_port,
+            flow_info.protocol,
+        )
+
+        # Get packets for both directions
+        fwd_packets = self.packets_by_tuple.get(fwd_tuple, [])
+        bwd_packets = self.packets_by_tuple.get(bwd_tuple, [])
+
+        if not fwd_packets and not bwd_packets:
+            return None
+
+        # Define time window from CSV
+        flow_start = flow_info.timestamp
+        flow_end = flow_start + flow_info.duration
+
+        # Extract packets within time window and mark direction
+        matched_fwd = [
+            (ts, proto, size, flags, 0)  # 0 = forward (matches Flow ID direction)
+            for ts, proto, size, flags in fwd_packets
+            if flow_start <= ts <= flow_end
+        ]
+        matched_bwd = [
+            (ts, proto, size, flags, 1)  # 1 = backward (opposite of Flow ID direction)
+            for ts, proto, size, flags in bwd_packets
+            if flow_start <= ts <= flow_end
+        ]
+
+        combined = matched_fwd + matched_bwd
+        if not combined:
+            return None
+
+        # Sort by timestamp
+        combined.sort(key=lambda pkt: pkt[0])
+
+        # Check if flow is complete by comparing packet counts and boundaries
+        actual_fwd = len(matched_fwd)
+        actual_bwd = len(matched_bwd)
+        expected_fwd = flow_info.fwd_packets
+        expected_bwd = flow_info.bwd_packets
+
+        # Detect split flows
+        # Allow ±1 packet tolerance for minor discrepancies in packet counting
+        fwd_mismatch = abs(actual_fwd - expected_fwd) > 1
+        bwd_mismatch = abs(actual_bwd - expected_bwd) > 1
+        crosses_boundaries = (
+            pcap_min is not None
+            and pcap_max is not None
+            and (flow_start < pcap_min or flow_end > pcap_max)
+        )
+
+        flow_info.is_complete = not (fwd_mismatch or bwd_mismatch or crosses_boundaries)
+
+        return combined
+
+    def _get_pcap_time_range(self) -> tuple[float | None, float | None]:
+        """Determine the time range of packets in the current PCAP."""
+        all_timestamps: list[float] = []
+
+        for packets in self.packets_by_tuple.values():
+            for pkt in packets:
+                all_timestamps.append(pkt[0])
+
+        if not all_timestamps:
+            return None, None
+
+        return min(all_timestamps), max(all_timestamps)
+
+    def compute_features(self) -> pd.DataFrame:
+        """Extract comprehensive ML features from complete flows only."""
+        data_rows = []
+
+        for _, (flow_info, packets) in tqdm(
+            self.complete_flows.items(),
+            desc="Extracting features",
+            unit="flow",
+            disable=not self.verbose,
         ):
             if not packets:
                 continue
 
-            matches = self._find_matching_csv_rows(flow_key, filtered_labels_df)
-
-            for _, row in matches.iterrows():
-                match_result = self._process_flow_match(flow_key, packets, row)
-                if match_result:
-                    flow_match, is_ambiguous = match_result
-                    labeled_flow_key = flow_key + (row["Label"], matched_flows)
-                    new_flows[labeled_flow_key] = flow_match["flow"]
-                    matched_flows += 1
-                    if is_ambiguous:
-                        ambiguous_matches += 1
-
-        # Replace flows with labeled flows
-        self.flows = new_flows
-
-        if self.verbose:
-            logger.info(f"Successfully matched {matched_flows} flows with labels")
-            if ambiguous_matches > 0:
-                logger.info(f"Resolved {ambiguous_matches} ambiguous timestamps")
-
-    def _find_matching_csv_rows(self, flow_key: tuple, labels_df: pd.DataFrame) -> pd.DataFrame:
-        """Find CSV rows that match the flow's 5-tuple."""
-        src_ip, dst_ip, src_port, dst_port, proto = flow_key[:5]
-        return labels_df[
-            (labels_df["Src IP"] == src_ip)
-            & (labels_df["Dst IP"] == dst_ip)
-            & (labels_df["Src Port"] == src_port)
-            & (labels_df["Dst Port"] == dst_port)
-            & (labels_df["Protocol"] == proto)
-        ]
-
-    def _process_flow_match(self, flow_key: tuple, packets: list, row: pd.Series) -> tuple | None:
-        """Process a single flow-label match."""
-        timestamp_str = str(row["Timestamp"])
-        expected_fwd_packets = int(row["Total Fwd Packet"])
-        expected_bwd_packets = int(row["Total Bwd packets"])
-        expected_total_packets = expected_fwd_packets + expected_bwd_packets
-        flow_duration = float(row["Flow Duration"]) if "Flow Duration" in row else None
-
-        # Get possible timestamps (AM/PM ambiguity resolution)
-        possible_timestamps = self._parse_timestamp_with_ambiguity(timestamp_str)
-        is_ambiguous = len(possible_timestamps) > 1
-
-        # Find best matching packet sequence
-        best_match = self._find_best_packet_match(
-            packets, possible_timestamps, expected_total_packets, flow_duration
-        )
-
-        if best_match:
-            return best_match, is_ambiguous
-        return None
-
-    def compute_features(self) -> None:
-        """Extract comprehensive ML features from processed flows."""
-        data_rows = []
-
-        for flow_key, pkt_list in tqdm(
-            self.flows.items(), desc="Extracting features", unit="flow", disable=not self.verbose
-        ):
-            if len(flow_key) < 5 or not pkt_list:
-                continue
-
-            # Extract flow metadata
-            src_ip, dst_ip, src_port, dst_port, proto = flow_key[:5]
-            label = (
-                flow_key[-2] if len(flow_key) > 5 and isinstance(flow_key[-2], str) else "UNLABELED"
-            )
-
-            # Sort packets by timestamp
-            pkt_list.sort(key=lambda pkt: pkt[0])
-
             # Compute flow-level features
-            flow_features = self._compute_flow_features(pkt_list)
+            flow_duration = (
+                packets[-1][0] - packets[0][0]
+            )  # Last packet timestamp - first packet timestamp
+
+            # Compute packet-level features
+            packet_features = self._compute_packet_features(packets)
 
             # Create feature row
-            row = [src_ip, dst_ip, src_port, dst_port, proto] + flow_features
+            row = (
+                [
+                    flow_info.flow_id,
+                    flow_info.src_ip,
+                    flow_info.dst_ip,
+                    flow_info.src_port,
+                    flow_info.dst_port,
+                    flow_info.protocol,
+                    flow_duration,
+                ]
+                + packet_features
+                + [flow_info.label]
+            )
 
-            # Extract packet-level features with window
-            packet_features = self._compute_packet_features(pkt_list)
-            row.extend(packet_features)
-
-            # Add label
-            row.append(label)
             data_rows.append(row)
 
-        # Create DataFrame with proper column names
-        self.df_flows = self._create_features_dataframe(data_rows)
+        # Create DataFrame
+        df = self._create_features_dataframe(data_rows)
 
-    def _compute_flow_features(self, pkt_list: list) -> list[float]:
-        """Compute flow-level statistical features."""
-        flow_duration = pkt_list[-1][0] - pkt_list[0][0] if len(pkt_list) > 1 else 0
-        pkt_sizes = [pkt[2] for pkt in pkt_list]
-        pkt_iats = [pkt_list[i][0] - pkt_list[i - 1][0] for i in range(1, len(pkt_list))]
+        if self.verbose:
+            logger.info(f"Extracted features from {len(data_rows)} complete flows")
+            logger.info(f"Feature matrix shape: {df.shape}")
 
-        max_pkt_size = max(pkt_sizes) if pkt_sizes else 0
-        iat_mean = sum(pkt_iats) / len(pkt_iats) if pkt_iats else 0
-        iat_std = (
-            (sum((x - iat_mean) ** 2 for x in pkt_iats) / len(pkt_iats)) ** 0.5 if pkt_iats else 0
-        )
+        return df
 
-        return [flow_duration, iat_mean, iat_std, max_pkt_size]
-
-    def _compute_packet_features(self, pkt_list: list) -> list[float]:
+    def _compute_packet_features(self, packets: list[tuple]) -> list[float]:
         """Extract packet-level features within sliding window."""
         # Create window of packets
-        window = pkt_list[: self.window_size]
+        window = packets[: self.window_size]
         while len(window) < self.window_size:
-            window.append((0, 0, 0, 0, 0))  # Padding: (timestamp, proto, size, flags, direction)
+            window.append((0.0, 0, 0, 0, 0))  # Padding
 
         packet_features = []
         for j, (timestamp, _, pkt_size, pkt_flags, direction) in enumerate(window):
             prev_timestamp = window[j - 1][0] if j > 0 and window[j - 1][0] != 0 else None
             pkt_iat = (
-                timestamp - prev_timestamp if timestamp != 0 and prev_timestamp is not None else 0
+                timestamp - prev_timestamp if timestamp != 0 and prev_timestamp is not None else 0.0
             )
             packet_features.extend([pkt_size, pkt_flags, pkt_iat, direction])
 
@@ -524,15 +527,8 @@ class FeatureExtractor:
         """Create properly formatted DataFrame with feature columns."""
         # Define column names
         base_columns = [
-            "Src_IP",
-            "Dst_IP",
-            "Src_Port",
-            "Dst_Port",
             "Protocol",
             "Flow_Duration",
-            "Flow_IAT_Mean",
-            "Flow_IAT_Std",
-            "Max_Pkt_Size",
         ]
 
         packet_columns = []
@@ -545,8 +541,8 @@ class FeatureExtractor:
 
         df = pd.DataFrame(data_rows, columns=columns)
 
-        # Convert numeric columns to appropriate types
-        numeric_columns = ["Flow_Duration", "Flow_IAT_Mean", "Flow_IAT_Std", "Max_Pkt_Size"]
+        # Convert numeric columns
+        numeric_columns = ["Flow_Duration"]
         numeric_columns.extend([f"Pkt_Size{i}" for i in range(1, self.window_size + 1)])
         numeric_columns.extend([f"Pkt_Flags{i}" for i in range(1, self.window_size + 1)])
         numeric_columns.extend([f"Pkt_IAT{i}" for i in range(1, self.window_size + 1)])
@@ -557,16 +553,14 @@ class FeatureExtractor:
 
     def save_output(self, output_file: str | None = None) -> str:
         """Save extracted features to CSV file."""
-        if self.df_flows is None:
-            raise RuntimeError("No features computed. Call compute_features() first.")
-
         if output_file is None:
-            suffix = "_features_with_labels.csv" if self.labels_file else "_features.csv"
-            output_file = os.path.splitext(self.pcap_file)[0] + suffix
+            output_file = os.path.splitext(self.pcap_file)[0] + "_features_with_labels.csv"
+
+        df = self.compute_features()
 
         # Select and reorder columns for output
         output_columns = (
-            ["Flow_Duration", "Protocol"]
+            ["Flow_ID", "Flow_Duration", "Protocol"]
             + [f"Pkt_Direction{i}" for i in range(1, self.window_size + 1)]
             + [f"Pkt_Flags{i}" for i in range(1, self.window_size + 1)]
             + [f"Pkt_IAT{i}" for i in range(1, self.window_size + 1)]
@@ -574,57 +568,60 @@ class FeatureExtractor:
             + ["Label"]
         )
 
-        output_df = self.df_flows[output_columns]
+        output_df = df[output_columns]
         output_df.to_csv(output_file, index=False)
 
         if self.verbose:
-            logger.info(f"Feature extraction completed. Saved to {output_file}")
+            logger.info(f"Saved features to {output_file}")
             logger.info(f"Output shape: {output_df.shape}")
 
         return output_file
 
+    def get_split_flow_report(self) -> pd.DataFrame:
+        """Generate a report of split/incomplete flows for debugging."""
+        split_data = []
+        for flow_id, flow_info in self.split_flows.items():
+            split_data.append(
+                {
+                    "Flow_ID": flow_id,
+                    "Src_IP": flow_info.src_ip,
+                    "Dst_IP": flow_info.dst_ip,
+                    "Start_Time": pd.to_datetime(flow_info.timestamp, unit="s"),
+                    "Duration": flow_info.duration,
+                    "Expected_Packets": flow_info.total_packets,
+                    "Label": flow_info.label,
+                }
+            )
+        return pd.DataFrame(split_data)
+
 
 def main():
     """Command-line interface for feature extraction."""
-    parser = argparse.ArgumentParser(
-        description="Extract ML features from PCAP files with advanced timestamp handling",
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog="""
-Examples:
-  # Basic feature extraction
-  python extractor.py sample.pcap --window 10
 
-  # With label matching
-  python extractor.py sample.pcap --labels flows.csv --window 10
-
-  # Quiet mode
-  python extractor.py sample.pcap --labels flows.csv --quiet
-        """,
-    )
-    parser.add_argument("pcap_file", help="Path to the PCAP file")
-    parser.add_argument(
-        "--window", type=int, default=10, help="Window size for feature extraction (default: 10)"
-    )
-    parser.add_argument("--labels", help="Path to the labels CSV file", default=None)
-    parser.add_argument("--output", help="Output CSV file path (auto-generated if not specified)")
-    parser.add_argument("--quiet", action="store_true", help="Disable verbose output")
-
-    args = parser.parse_args()
+    args = parse_arguments()
 
     try:
         extractor = FeatureExtractor(
             pcap_file=args.pcap_file,
-            window_size=args.window,
             labels_file=args.labels,
+            window_size=args.window,
             verbose=not args.quiet,
         )
 
         extractor.process_packets()
-        extractor.compute_features()
+        extractor.match_flows_with_labels()
         output_file = extractor.save_output(args.output)
 
-        print("✅ Feature extraction completed successfully!")
-        print(f"📁 Output saved to: {output_file}")
+        # Generate split flow report if requested
+        if args.split_report:
+            split_df = extractor.get_split_flow_report()
+            split_df.to_csv(args.split_report, index=False)
+            logger.info(f"Split flow report saved to {args.split_report}")
+
+        print("Feature extraction completed successfully!")
+        print(f"Output saved to: {output_file}")
+        print(f"Complete flows: {len(extractor.complete_flows)}")
+        print(f"Split flows: {len(extractor.split_flows)}")
 
     except Exception as e:
         logger.error(f"Feature extraction failed: {e}")
