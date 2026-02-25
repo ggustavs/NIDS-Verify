@@ -21,6 +21,12 @@ dependencies = [
     "scapy>=2.6.1",
     "torch>=2.2.0",
     "property-driven-ml==0.2.7",
+    "vehicle-lang>=0.23.0",
+    "jupyter>=1.1.1",
+    "idx2numpy>=1.2.3",
+    "lightning>=2.6.1",
+    "memray>=1.19.1",
+    "loguru>=0.7.3",
 ]
 
 [project.optional-dependencies]
@@ -35,6 +41,7 @@ dev = [
 [project.scripts]
 nids-train = "src.main:main"
 nids-preprocess = "src.preprocess_cli:main"
+nids-evaluate = "src.evaluate_cli:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src"]

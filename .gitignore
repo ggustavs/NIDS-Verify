@@ -1,9 +1,30 @@
+# Data and outputs
 /data
-.vscode
-misc
-mlruns
-models
-logs
-__pycache__
+mlruns/
+/models/
+logs/
+reports/
+splits/
+visualizations/
+
+# Editor
+.vscode/
+misc/
+.github
+
+# Python
+__pycache__/
 *.py[cod]
 *$py.class
+*.so
+.Python
+*.egg-info/
+dist/
+build/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Jupyter
+.ipynb_checkpoints/
+*.ipynb:Zone.Identifier
