@@ -264,7 +264,6 @@ class FeatureExtractor:
             / 1e9
         )
 
-        # Sort by timestamp - keep original index to maintain label row references
         labels_df = labels_df.sort_values("Timestamp_Unix")
 
         if self.verbose:
@@ -281,20 +280,32 @@ class FeatureExtractor:
                 f"{pd.to_datetime(pcap_max, unit='s')}"
             )
 
-        # Get column indices for fast positional access with itertuples
-        col_index = {col: idx for idx, col in enumerate(labels_df.columns)}
-
-        # Match each flow from labels using itertuples (much faster than iterrows)
-        # Keep index=True to track which label row each flow came from
-        for row in tqdm(
-            labels_df.itertuples(index=True),
+        # Match each flow from labels using iterrows (simpler than managing namedtuple field name mapping)
+        for label_idx, row in tqdm(
+            labels_df.iterrows(),
             total=len(labels_df),
             desc="Matching flows",
             unit="flow",
             disable=not self.verbose,
         ):
-            label_idx = int(row.Index)  # type: ignore[arg-type]
-            flow_info = self._create_flow_info_from_tuple(row, col_index, label_idx)
+            flow_info = FlowInfo(
+                flow_id=row["Flow ID"],
+                src_ip=row["Src IP"],
+                dst_ip=row["Dst IP"],
+                src_port=int(row["Src Port"]),
+                dst_port=int(row["Dst Port"]),
+                protocol=int(row["Protocol"]),
+                timestamp=float(row["Timestamp_Unix"]),
+                duration=normalize_flow_duration(row["Flow Duration"]),
+                fwd_packets=int(row["Total Fwd Packet"]),
+                bwd_packets=int(row["Total Bwd packets"]),
+                total_packets=int(row["Total Fwd Packet"]) + int(row["Total Bwd packets"]),
+                label=row["Label"],
+            )
+
+            # Embed the label_idx for uniqueness when multiple flows have same 5-tuple
+            flow_info.flow_id = f"{label_idx}:{flow_info.flow_id}"
+
             matched_packets = self._match_flow_packets(flow_info, pcap_min, pcap_max)
 
             if matched_packets is not None:
@@ -307,62 +318,6 @@ class FeatureExtractor:
         if self.verbose:
             logger.info(f"Matched {len(self.complete_flows)} complete flows")
             logger.info(f"Detected {len(self.split_flows)} split/incomplete flows")
-
-    def _create_flow_info_from_tuple(self, row, col_index: dict, label_idx: int) -> FlowInfo:
-        """Create FlowInfo object from namedtuple row using positional access."""
-        # Access by position to avoid itertuples column name mangling
-        # Note: when index=True, itertuples adds Index as first field, so adjust indices
-        flow_id = str(row[col_index["Flow ID"] + 1])  # +1 for Index field
-        src_ip, dst_ip, src_port, dst_port, protocol = parse_flow_id(flow_id)
-
-        timestamp = float(row[col_index["Timestamp_Unix"] + 1])
-        duration = normalize_flow_duration(row[col_index["Flow Duration"] + 1])
-        fwd_packets = int(row[col_index["Total Fwd Packet"] + 1])
-        bwd_packets = int(row[col_index["Total Bwd packets"] + 1])
-        total_packets = fwd_packets + bwd_packets
-        label = str(row[col_index["Label"] + 1])
-
-        return FlowInfo(
-            flow_id=f"{label_idx}:{flow_id}",  # Unique ID with label row index
-            src_ip=src_ip,
-            dst_ip=dst_ip,
-            src_port=src_port,
-            dst_port=dst_port,
-            protocol=protocol,
-            timestamp=timestamp,
-            duration=duration,
-            fwd_packets=fwd_packets,
-            bwd_packets=bwd_packets,
-            total_packets=total_packets,
-            label=label,
-        )
-
-    def _create_flow_info(self, row: pd.Series) -> FlowInfo:
-        """Create FlowInfo object from CSV row."""
-        flow_id = str(row["Flow ID"])
-        src_ip, dst_ip, src_port, dst_port, protocol = parse_flow_id(flow_id)
-
-        timestamp = float(row["Timestamp_Unix"])
-        duration = normalize_flow_duration(row.get("Flow Duration"))
-        fwd_packets = int(row.get("Total Fwd Packet", 0))
-        bwd_packets = int(row.get("Total Bwd packets", 0))
-        total_packets = fwd_packets + bwd_packets
-        label = str(row.get("Label", "UNKNOWN"))
-
-        return FlowInfo(
-            flow_id=flow_id,
-            src_ip=src_ip,
-            dst_ip=dst_ip,
-            src_port=src_port,
-            dst_port=dst_port,
-            protocol=protocol,
-            timestamp=timestamp,
-            duration=duration,
-            fwd_packets=fwd_packets,
-            bwd_packets=bwd_packets,
-            total_packets=total_packets,
-            label=label,
-        )
 
     def _match_flow_packets(
         self, flow_info: FlowInfo, pcap_min: float | None, pcap_max: float | None
@@ -433,9 +388,8 @@ class FeatureExtractor:
         expected_bwd = flow_info.bwd_packets
 
         # Detect split flows
-        # Allow ±1 packet tolerance for minor discrepancies in packet counting
-        fwd_mismatch = abs(actual_fwd - expected_fwd) > 1
-        bwd_mismatch = abs(actual_bwd - expected_bwd) > 1
+        fwd_mismatch = actual_fwd != expected_fwd
+        bwd_mismatch = actual_bwd != expected_bwd
         crosses_boundaries = (
             pcap_min is not None
             and pcap_max is not None
@@ -481,19 +435,7 @@ class FeatureExtractor:
             packet_features = self._compute_packet_features(packets)
 
             # Create feature row
-            row = (
-                [
-                    flow_info.flow_id,
-                    flow_info.src_ip,
-                    flow_info.dst_ip,
-                    flow_info.src_port,
-                    flow_info.dst_port,
-                    flow_info.protocol,
-                    flow_duration,
-                ]
-                + packet_features
-                + [flow_info.label]
-            )
+            row = (flow_info.protocol, flow_duration, *packet_features, flow_info.label)
 
             data_rows.append(row)
 
@@ -527,8 +469,8 @@ class FeatureExtractor:
         """Create properly formatted DataFrame with feature columns."""
         # Define column names
         base_columns = [
+            "Flow Duration",
             "Protocol",
-            "Flow_Duration",
         ]
 
         packet_columns = []
@@ -542,7 +484,7 @@ class FeatureExtractor:
         df = pd.DataFrame(data_rows, columns=columns)
 
         # Convert numeric columns
-        numeric_columns = ["Flow_Duration"]
+        numeric_columns = ["Flow Duration"]
         numeric_columns.extend([f"Pkt_Size{i}" for i in range(1, self.window_size + 1)])
         numeric_columns.extend([f"Pkt_Flags{i}" for i in range(1, self.window_size + 1)])
         numeric_columns.extend([f"Pkt_IAT{i}" for i in range(1, self.window_size + 1)])
@@ -551,16 +493,14 @@ class FeatureExtractor:
         df[numeric_columns] = df[numeric_columns].astype(float)
         return df
 
-    def save_output(self, output_file: str | None = None) -> str:
+    def save_output(self, df: pd.DataFrame, output_file: str | None = None) -> str:
         """Save extracted features to CSV file."""
         if output_file is None:
             output_file = os.path.splitext(self.pcap_file)[0] + "_features_with_labels.csv"
 
-        df = self.compute_features()
-
         # Select and reorder columns for output
         output_columns = (
-            ["Flow_ID", "Flow_Duration", "Protocol"]
+            ["Flow Duration", "Protocol"]
             + [f"Pkt_Direction{i}" for i in range(1, self.window_size + 1)]
             + [f"Pkt_Flags{i}" for i in range(1, self.window_size + 1)]
             + [f"Pkt_IAT{i}" for i in range(1, self.window_size + 1)]
@@ -610,9 +550,9 @@ def main():
 
         extractor.process_packets()
         extractor.match_flows_with_labels()
-        output_file = extractor.save_output(args.output)
+        df = extractor.compute_features()
+        output_file = extractor.save_output(df, args.output)
 
-        # Generate split flow report if requested
         if args.split_report:
             split_df = extractor.get_split_flow_report()
             split_df.to_csv(args.split_report, index=False)
