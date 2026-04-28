@@ -28,3 +28,6 @@ build/
 # Jupyter
 .ipynb_checkpoints/
 *.ipynb:Zone.Identifier
+
+# Vehicle
+*.vclo

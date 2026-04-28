@@ -32,7 +32,7 @@ size5    =  40 / 1000
 IATsThreshold = 0.05 -- seconds are: IATsThreshold * 50000000000
 minTimeElapsed = 0.1 -- seconds are: IATsThreshold * 50000000000
 
-type InputVector = Tensor Rat [inputSize]
+type InputVector = Tensor Real [inputSize]
 
 -- Next we add meaningful names for the indices.
 
@@ -88,7 +88,7 @@ pktSize10         = 41 -- 2 + 3 * m + 9
 
 -- Outputs are a vector of 2 rationals. Representing the POS and NEG classes.
 
-type OutputVector = Vector Rat 2
+type OutputVector = Tensor Real [2]
 type Label = Index 2
 
 -- Again we define meaningful names for the indices into output vectors.
@@ -117,15 +117,6 @@ advises x i = forall j . j != i => classifier x ! i > classifier x ! j
 -- Next we define the minimum and maximum values that each input can take.
 -- These correspond to the range of the inputs that the network is designed
 -- to work over.
-
-oneHotLabels : Vector Nat 11
-oneHotLabels = [protocol, pktDirection1, pktDirection2, pktDirection3, pktDirection4, pktDirection5, pktDirection6, pktDirection7, pktDirection8, pktDirection9, pktDirection10]
-
-pktFlagsLabels : Vector Nat 10
-pktFlagsLabels = [pktFlags1, pktFlags2, pktFlags3, pktFlags4, pktFlags5, pktFlags6, pktFlags7, pktFlags8, pktFlags9, pktFlags10]
-
-checkOneHot : Index inputSize -> Bool
-checkOneHot i = protocol <= i <= pktDirection10
 
 checkPktFlags : Index inputSize -> Bool
 checkPktFlags i = pktFlags1 <= i <= pktFlags10
