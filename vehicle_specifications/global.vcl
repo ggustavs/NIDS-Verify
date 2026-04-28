@@ -137,7 +137,7 @@ checkSizes i = pktSize1 <= i <= pktSize10
 -- a relaxed spefication that still captures approx. 70% of flows in training data whilst reducing our checks from 2048
 -- to 8!
 commonDirs : InputVector -> Bool
-commonDirs x = x ! pktDirection1 == 0.0 and x ! pktDirection2 == 1.0 and (x ! pktDirection3 == 0.0) and x ! pktDirection4 == 0.0 and (x ! pktDirection5 == 1.0) and x ! pktDirection6 == 1.0 and x ! pktDirection7 == 1.0 and (x ! pktDirection8 == 1.0) and (x ! pktDirection9 == 1.0 or x ! pktDirection9 == 0.0) and (x ! pktDirection10 == 0.0) 
+commonDirs x = x ! pktDirection1 == 0.0 and x ! pktDirection2 == 1.0 and (x ! pktDirection3 == 0.0) and x ! pktDirection4 == 0.0 and (x ! pktDirection5 == 1.0) and x ! pktDirection6 == 1.0 and x ! pktDirection7 == 1.0 and (x ! pktDirection8 == 1.0) and (x ! pktDirection9 == 1.0 or x ! pktDirection9 == 0.0) and (x ! pktDirection10 == 0.0)
 
 -- We can do something similar with flags
 commonFlags : InputVector -> Bool
@@ -146,7 +146,7 @@ commonFlags x = x ! pktFlags1 == SYN and x ! pktFlags2 == SYN+ACK and x ! pktFla
 validInput1 : InputVector -> Bool
 validInput1 x = forall i . 0.0 <= x ! i <= 1.0
 
-validInput2 : InputVector -> Bool 
+validInput2 : InputVector -> Bool
 validInput2 x = commonDirs x
 
 validInput3 : InputVector -> Bool
