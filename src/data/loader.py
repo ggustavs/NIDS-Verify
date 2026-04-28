@@ -1,186 +1,148 @@
-"""Unified data loading for NIDS datasets (PyTorch)."""
+"""Lightning DataModule for NIDS datasets."""
 
 from dataclasses import dataclass
-from enum import Enum
 from pathlib import Path
-from typing import List, Optional, Tuple
 
 import numpy as np
 import pandas as pd
+import pytorch_lightning as pl
 import torch
 from loguru import logger
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import MinMaxScaler
-from torch.utils.data import DataLoader as TorchDataLoader
-from torch.utils.data import Dataset
+from torch.utils.data import DataLoader, Dataset
 
 from src.config import config
 
-
-class DatasetType(Enum):
-    """Available datasets for NIDS training."""
-
-    ORIGINAL = "original"
-    FIXED = "fixed"
-
-    @property
-    def description(self) -> str:
-        descriptions = {
-            "original": "Original DoS dataset (preprocessed CSVs)",
-            "fixed": "Extracted PCAP features from fixed data",
-        }
-        return descriptions.get(self.value, "Unknown dataset")
+_LABEL_COL = "Label"
 
 
 @dataclass
-class _DatasetConfig:
+class _DatasetSpec:
     name: str
     train_path: Path
     test_path: Path
 
-    def validate(self) -> None:
-        if not self.train_path.exists():
-            raise FileNotFoundError(f"Train file not found: {self.train_path}")
-        if not self.test_path.exists():
-            raise FileNotFoundError(f"Test file not found: {self.test_path}")
+
+_DATASETS: dict[str, callable] = {
+    "original": lambda d: _DatasetSpec(
+        "Original DoS",
+        Path(d) / "preprocessed-dos-train.csv",
+        Path(d) / "preprocessed-dos-test.csv",
+    ),
+    "fixed": lambda d: _DatasetSpec(
+        "Fixed Flows",
+        Path(d) / "wednesday_train_binary.csv",
+        Path(d) / "wednesday_test_binary.csv",
+    ),
+}
 
 
-def _get_dataset_config(dataset_type: str, data_dir: str) -> _DatasetConfig:
-    data_path = Path(data_dir)
-    configs = {
-        "original": _DatasetConfig(
-            name="Original DoS",
-            train_path=data_path / "preprocessed-dos-train.csv",
-            test_path=data_path / "preprocessed-dos-test.csv",
-        ),
-        "fixed": _DatasetConfig(
-            name="Fixed Flows",
-            train_path=data_path / "wednesday_train_binary.csv",
-            test_path=data_path / "wednesday_test_binary.csv",
-        ),
-    }
-
-    if dataset_type not in configs:
-        available = ", ".join(configs.keys())
-        raise ValueError(f"Unknown dataset '{dataset_type}'. Available: {available}")
-
-    config_obj = configs[dataset_type]
-    config_obj.validate()
-    return config_obj
-
-
-class _NDArrayDataset(Dataset):
-    """Simple Dataset wrapping numpy arrays."""
+class _TensorDataset(Dataset):
+    """In-memory dataset over preconverted tensors."""
 
     def __init__(self, X: np.ndarray, y: np.ndarray):
-        self.X = np.asarray(X, dtype=np.float32)
-        self.y = np.asarray(y, dtype=np.int64)
-
-    @property
-    def mean(self):
-        return torch.as_tensor(np.mean(self.X, axis=0))
-
-    @property
-    def std(self):
-        return torch.as_tensor(np.std(self.X, axis=0))
+        self.X = torch.as_tensor(X, dtype=torch.float32)
+        self.y = torch.as_tensor(y, dtype=torch.long)
 
     def __len__(self) -> int:
         return self.X.shape[0]
 
-    def __getitem__(self, idx: int) -> Tuple[torch.Tensor, torch.Tensor]:
-        y_arr = np.asarray(self.y[idx], dtype=np.int64)
-        return torch.from_numpy(self.X[idx]), torch.as_tensor(y_arr, dtype=torch.long)
+    def __getitem__(self, idx: int) -> tuple[torch.Tensor, torch.Tensor]:
+        return self.X[idx], self.y[idx]
 
 
-class DataLoader:
-    """Unified data loader for NIDS datasets."""
+class NIDSDataModule(pl.LightningDataModule):
+    """Loads CIC-IDS CSVs, normalises to [0,1], yields train/val/test DataLoaders."""
 
-    def __init__(self, data_dir: Optional[str] = None):
-        self.data_dir = data_dir or config.data.data_dir
-        self.scaler = MinMaxScaler()
-        self.feature_names: List[str] = []
-
-    def load_data(
+    def __init__(
         self,
         dataset: str = "fixed",
-        test_size: float = 0.2,
+        data_dir: str | None = None,
+        batch_size: int | None = None,
+        num_workers: int | None = None,
+        val_size: float = 0.2,
         random_state: int = 42,
-    ) -> Tuple[TorchDataLoader, TorchDataLoader, TorchDataLoader, List[str]]:
-        logger.info(f"Loading dataset: {dataset}")
+    ):
+        super().__init__()
+        if dataset not in _DATASETS:
+            raise ValueError(f"Unknown dataset '{dataset}'. Available: {list(_DATASETS)}")
+        self.dataset = dataset
+        self.data_dir = data_dir or config.data.data_dir
+        self.batch_size = batch_size or config.data.batch_size
+        self.num_workers = num_workers if num_workers is not None else config.data.num_workers
+        self.val_size = val_size
+        self.random_state = random_state
 
-        dataset_config = _get_dataset_config(dataset, self.data_dir)
-        logger.info(f"Using dataset: {dataset_config.name}")
+        self.feature_names: list[str] = []
+        self._train_ds: _TensorDataset | None = None
+        self._val_ds: _TensorDataset | None = None
+        self._test_ds: _TensorDataset | None = None
 
-        train_df = pd.read_csv(dataset_config.train_path)
-        test_df = pd.read_csv(dataset_config.test_path)
+    def setup(self, stage: str | None = None) -> None:
+        spec = _DATASETS[self.dataset](self.data_dir)
+        if not spec.train_path.exists():
+            raise FileNotFoundError(spec.train_path)
+        if not spec.test_path.exists():
+            raise FileNotFoundError(spec.test_path)
+
+        logger.info(f"Loading dataset: {spec.name}")
+        train_df = pd.read_csv(spec.train_path)
+        test_df = pd.read_csv(spec.test_path)
         logger.info(f"Loaded train: {train_df.shape}, test: {test_df.shape}")
 
-        self._binarize_direction_columns(train_df)
-        self._binarize_direction_columns(test_df)
+        if _LABEL_COL not in train_df.columns:
+            raise ValueError(f"Train CSV missing '{_LABEL_COL}' column")
+        if _LABEL_COL not in test_df.columns:
+            raise ValueError(f"Test CSV missing '{_LABEL_COL}' column")
 
-        label_col = train_df.columns[-1]
-        self.feature_names = [c for c in train_df.columns if c != label_col]
-        logger.info(f"Features: {len(self.feature_names)} columns")
+        self.feature_names = [c for c in train_df.columns if c != _LABEL_COL]
 
-        # Extract features and labels, ensuring numeric types
-        X_train = train_df[self.feature_names].apply(pd.to_numeric, errors='coerce').fillna(0).to_numpy()
-        y_train = train_df[label_col].to_numpy()
-        X_test = test_df[self.feature_names].apply(pd.to_numeric, errors='coerce').fillna(0).to_numpy()
-        y_test = test_df[label_col].to_numpy()
-
-        # Handle infinite values - replace with 0
-        X_train = np.nan_to_num(X_train, nan=0.0, posinf=0.0, neginf=0.0)
-        X_test = np.nan_to_num(X_test, nan=0.0, posinf=0.0, neginf=0.0)
+        X_train = self._extract_features(train_df)
+        y_train = train_df[_LABEL_COL].to_numpy()
+        X_test = self._extract_features(test_df)
+        y_test = test_df[_LABEL_COL].to_numpy()
 
         X_train, X_val, y_train, y_val = train_test_split(
             X_train,
             y_train,
-            test_size=test_size,
-            random_state=random_state,
+            test_size=self.val_size,
+            random_state=self.random_state,
             stratify=y_train,
         )
 
-        if (X_train.min() < 0).any() or (X_train.max() > 1).any():
-            logger.warning("Feature values not in [0, 1] - applying MinMaxScaler")
-            X_train = self.scaler.fit_transform(X_train)
-            X_val = self.scaler.transform(X_val)
-            X_test = self.scaler.transform(X_test)
+        scaler = MinMaxScaler()
+        X_train = scaler.fit_transform(X_train)
+        X_val = scaler.transform(X_val)
+        X_test = scaler.transform(X_test)
 
-        logger.info(
-            f"Data split - Train: {X_train.shape}, Val: {X_val.shape}, Test: {X_test.shape}"
-        )
+        logger.info(f"Train: {X_train.shape}, Val: {X_val.shape}, Test: {X_test.shape}")
 
-        train_loader = self._create_loader(X_train, y_train, shuffle=True)
-        val_loader = self._create_loader(X_val, y_val, shuffle=False)
-        test_loader = self._create_loader(X_test, y_test, shuffle=False)
+        self._train_ds = _TensorDataset(X_train, y_train)
+        self._val_ds = _TensorDataset(X_val, y_val)
+        self._test_ds = _TensorDataset(X_test, y_test)
 
-        return train_loader, val_loader, test_loader, self.feature_names
+    def _extract_features(self, df: pd.DataFrame) -> np.ndarray:
+        X = df[self.feature_names].apply(pd.to_numeric, errors="coerce").to_numpy(dtype=np.float32)
+        return np.nan_to_num(X, nan=0.0, posinf=0.0, neginf=0.0)
 
-    @staticmethod
-    def _binarize_direction_columns(df: pd.DataFrame) -> None:
-        dir_cols = [col for col in df.columns if col.startswith("Pkt_Direction")]
-        if not dir_cols:
-            return
+    def train_dataloader(self) -> DataLoader:
+        return self._make_loader(self._train_ds, shuffle=True)
 
-        dir_values = df[dir_cols].to_numpy(dtype=np.float32, copy=True)
-        if np.any(dir_values < 0.0):
-            binarized = (dir_values > 0.0).astype(np.float32)
-        else:
-            binarized = (dir_values >= 0.5).astype(np.float32)
+    def val_dataloader(self) -> DataLoader:
+        return self._make_loader(self._val_ds, shuffle=False)
 
-        df.loc[:, dir_cols] = binarized
+    def test_dataloader(self) -> DataLoader:
+        return self._make_loader(self._test_ds, shuffle=False)
 
-    def _create_loader(
-        self,
-        X: np.ndarray,
-        y: np.ndarray,
-        shuffle: bool = False,
-    ) -> TorchDataLoader:
-        dataset = _NDArrayDataset(X, y)
-        return TorchDataLoader(
-            dataset,
-            batch_size=config.data.batch_size,
+    def _make_loader(self, ds: _TensorDataset | None, shuffle: bool) -> DataLoader:
+        if ds is None:
+            raise RuntimeError("setup() must be called before requesting dataloaders")
+        return DataLoader(
+            ds,
+            batch_size=self.batch_size,
             shuffle=shuffle,
-            num_workers=0,
+            num_workers=self.num_workers,
             pin_memory=torch.cuda.is_available(),
+            persistent_workers=self.num_workers > 0,
         )

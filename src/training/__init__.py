@@ -1,23 +1,4 @@
-"""
-Training utilities (PyTorch Lightning-based)
-"""
-
 from .lightning_module import NIDSLightningModule
-from .trainer import (
-    create_trainer,
-    evaluate_model,
-    get_callbacks,
-    train_adversarial,
-    train_base,
-    train_constraint,
-)
+from .trainer import create_trainer, get_callbacks
 
-__all__ = [
-    "NIDSLightningModule",
-    "get_callbacks",
-    "create_trainer",
-    "train_base",
-    "train_adversarial",
-    "train_constraint",
-    "evaluate_model",
-]
+__all__ = ["NIDSLightningModule", "create_trainer", "get_callbacks"]

@@ -1,40 +1,21 @@
-"""
-Feature Extraction Tool with Timestamp-Based Flow Matching
+"""Feature extraction from PCAPs via timestamp-based flow matching.
 
-This module extracts machine learning features from PCAP files using precise
-timestamp and duration information from CSV labels to accurately recreate flows.
-
-Key Features:
-- Timestamp-based flow matching with microsecond precision
-- Flow completeness detection for chunked PCAP processing
-- Time-window based bidirectional packet matching
-- Comprehensive feature extraction for ML training
-- Memory-efficient batch processing
-
-Workflow:
-1. Index all packets by their 5-tuple
-2. Read and sort flow labels by timestamp
-3. For each flow, match packets within its time window (timestamp to timestamp+duration)
-4. Determine packet direction relative to flow initiator (from Flow ID)
-5. Identify complete vs split flows (incomplete due to chunking)
-6. Extract features only from complete flows
+This module indexes all packet metadata for one PCAP in memory before matching
+flows. For PCAPs exceeding RAM, use src.pcap.batch which splits with tcpdump
+and runs this extractor per chunk.
 """
 
 import argparse
-import logging
 import os
 from collections import defaultdict
 from dataclasses import dataclass
 
 import pandas as pd
+from loguru import logger
 from scapy.layers.inet import IP, TCP, UDP
 from scapy.layers.l2 import Ether
 from scapy.utils import RawPcapReader
 from tqdm import tqdm
-
-# Set up logging
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
 
 
 def parse_arguments():
@@ -85,16 +66,6 @@ class FlowInfo:
     is_complete: bool = True  # Whether all packets were captured
 
 
-def parse_flow_id(flow_id: str) -> tuple[str, str, int, int, int]:
-    """Parse Flow ID into 5-tuple components."""
-    parts = flow_id.split("-")
-    if len(parts) != 5:
-        raise ValueError(f"Invalid Flow ID format: {flow_id}")
-    src_ip, dst_ip = parts[0], parts[1]
-    src_port, dst_port, protocol = int(parts[2]), int(parts[3]), int(parts[4])
-    return src_ip, dst_ip, src_port, dst_port, protocol
-
-
 def normalize_flow_duration(raw_value: float | None) -> float:
     """Normalize flow duration from CSV to seconds (CIC CSV stores microseconds)."""
     if raw_value is None or pd.isna(raw_value):
@@ -135,13 +106,11 @@ class FeatureExtractor:
         self.window_size = window_size
         self.verbose = verbose
 
-        # Packet storage: indexed by 5-tuple for fast lookup
-        # Stores packets in both possible directions of the 5-tuple
         self.packets_by_tuple: dict[tuple, list[tuple]] = defaultdict(list)
-
-        # Flow storage: Complete flows ready for feature extraction
         self.complete_flows: dict[str, tuple[FlowInfo, list[tuple]]] = {}
-        self.split_flows: dict[str, FlowInfo] = {}  # Incomplete flows
+        self.split_flows: dict[str, FlowInfo] = {}
+        self._pcap_min_ts: float | None = None
+        self._pcap_max_ts: float | None = None
 
         if verbose:
             logger.info(f"Initialized FeatureExtractor for {pcap_file}")
@@ -181,12 +150,16 @@ class FeatureExtractor:
 
                 five_tuple, packet_record = packet_data
                 self.packets_by_tuple[five_tuple].append(packet_record)
+                ts = packet_record[0]
+                if self._pcap_min_ts is None or ts < self._pcap_min_ts:
+                    self._pcap_min_ts = ts
+                if self._pcap_max_ts is None or ts > self._pcap_max_ts:
+                    self._pcap_max_ts = ts
                 packet_count += 1
 
         except Exception as e:
             raise RuntimeError(f"Failed to process PCAP file {self.pcap_file}") from e
 
-        # Sort packets by timestamp for each 5-tuple
         if self.verbose:
             logger.info("Sorting packets by timestamp...")
         for five_tuple in self.packets_by_tuple:
@@ -401,17 +374,8 @@ class FeatureExtractor:
         return combined
 
     def _get_pcap_time_range(self) -> tuple[float | None, float | None]:
-        """Determine the time range of packets in the current PCAP."""
-        all_timestamps: list[float] = []
-
-        for packets in self.packets_by_tuple.values():
-            for pkt in packets:
-                all_timestamps.append(pkt[0])
-
-        if not all_timestamps:
-            return None, None
-
-        return min(all_timestamps), max(all_timestamps)
+        """Time range tracked during indexing in process_packets()."""
+        return self._pcap_min_ts, self._pcap_max_ts
 
     def compute_features(self) -> pd.DataFrame:
         """Extract comprehensive ML features from complete flows only."""
@@ -558,15 +522,13 @@ def main():
             split_df.to_csv(args.split_report, index=False)
             logger.info(f"Split flow report saved to {args.split_report}")
 
-        print("Feature extraction completed successfully!")
-        print(f"Output saved to: {output_file}")
-        print(f"Complete flows: {len(extractor.complete_flows)}")
-        print(f"Split flows: {len(extractor.split_flows)}")
-
-    except Exception as e:
-        logger.error(f"Feature extraction failed: {e}")
+        logger.info(
+            f"Done: complete={len(extractor.complete_flows)} "
+            f"split={len(extractor.split_flows)} → {output_file}"
+        )
+    except Exception:
+        logger.exception("Feature extraction failed")
         return 1
-
     return 0
 
 

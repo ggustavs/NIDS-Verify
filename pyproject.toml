@@ -20,13 +20,9 @@ dependencies = [
     "tqdm>=4.67.1",
     "scapy>=2.6.1",
     "torch>=2.2.0",
-    "property-driven-ml==0.2.7",
-    "vehicle-lang>=0.23.0",
-    "jupyter>=1.1.1",
-    "idx2numpy>=1.2.3",
     "lightning>=2.6.1",
-    "memray>=1.19.1",
     "loguru>=0.7.3",
+    "vehicle-lang",
 ]
 
 [project.optional-dependencies]
@@ -34,35 +30,15 @@ dev = [
     "pytest>=7.0.0",
     "pytest-cov>=4.0.0",
     "mypy>=1.5.0",
-    "jupyter>=1.0.0",
     "ipykernel>=6.25.0",
 ]
 
 [project.scripts]
 nids-train = "src.main:main"
 nids-preprocess = "src.preprocess_cli:main"
-nids-evaluate = "src.evaluate_cli:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src"]
-
-[tool.black]
-line-length = 100
-target-version = ['py312']
-include = '\.pyi?$'
-extend-exclude = '''
-/(
-  # directories
-  \.eggs
-  | \.git
-  | \.hg
-  | \.mypy_cache
-  | \.tox
-  | \.venv
-  | build
-  | dist
-)/
-'''
 
 [tool.isort]
 profile = "black"
@@ -82,11 +58,6 @@ testpaths = ["tests"]
 python_files = ["test_*.py"]
 python_classes = ["Test*"]
 python_functions = ["test_*"]
-addopts = [
-    "--cov=src",
-    "--cov-report=term-missing",
-    "--cov-report=html",
-]
 
 [dependency-groups]
 dev = [
@@ -107,6 +78,7 @@ exclude = [
     "logs",
     "mlruns",
     "vehicle",
+    "cloned_vehicle",
 ]
 
 [tool.ruff.lint]
@@ -123,14 +95,13 @@ select = [
 ignore = [
     "E501",  # line too long (handled by formatter)
     "B008",  # do not perform function calls in argument defaults
-    "C901",  # too complex (research code can be complex)
+    "C901",  # too complex
     "B905",  # zip() without an explicit strict= parameter
 ]
 
 [tool.ruff.lint.per-file-ignores]
-"__init__.py" = ["F401"]  # Allow unused imports in __init__.py
-"tests/**/*.py" = ["S101"]  # Allow assert statements in tests
-"nb/**/*.py" = ["E402", "F401", "B018"]  # More lenient for notebooks
+"__init__.py" = ["F401"]
+"tests/**/*.py" = ["S101"]
 
 [tool.ruff.format]
 quote-style = "double"
@@ -138,21 +109,10 @@ indent-style = "space"
 skip-magic-trailing-comma = false
 line-ending = "auto"
 
-[tool.bandit]
-exclude_dirs = ["tests", "nb", "scripts"]
-skips = ["B101", "B601"]  # Skip assert_used and shell=True warnings
-
-[tool.interrogate]
-ignore-init-method = true
-ignore-init-module = true
-ignore-magic = true
-ignore-semiprivate = true
-ignore-private = true
-ignore-property-decorators = true
-ignore-module = true
-fail-under = 50
-exclude = ["tests", "nb", "scripts"]
-verbose = 0
-
 [tool.uv.sources]
-property-driven-ml = { url = "https://files.pythonhosted.org/packages/3d/63/e01965123b8ec0c2ad0543af0488884a4eeb033c21d08b09f50ea07e4f43/property_driven_ml-0.2.7-py3-none-any.whl" }
+vehicle-lang = { workspace = true }
+
+[tool.uv.workspace]
+members = [
+    "cloned_vehicle/vehicle-python",
+]

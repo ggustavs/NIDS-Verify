@@ -1,6 +1,3 @@
-"""
-Data utilities
-"""
-from .loader import DataLoader, _NDArrayDataset
+from .loader import NIDSDataModule
 
-__all__ = ['DataLoader', '_NDArrayDataset']
+__all__ = ["NIDSDataModule"]

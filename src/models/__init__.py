@@ -1,25 +1,22 @@
-"""
-Model utilities and common functions
-"""
-from .architectures import ModelFactory, create_model
+from .architectures import ARCHITECTURES, MODEL_TYPES, create_model, make_mlp
 from .evaluation import (
-    ModelEvaluator,
-    EvaluationMetrics,
     EvaluationConfig,
+    EvaluationMetrics,
     EvaluationVisualizer,
+    ModelEvaluator,
     ReportGenerator,
-    evaluate_vehicle_constraints,
     evaluate_all_registered_models,
 )
 
 __all__ = [
-    'ModelFactory',
-    'create_model',
-    'ModelEvaluator',
-    'EvaluationMetrics',
-    'EvaluationConfig',
-    'EvaluationVisualizer',
-    'ReportGenerator',
-    'evaluate_vehicle_constraints',
-    'evaluate_all_registered_models',
+    "ARCHITECTURES",
+    "MODEL_TYPES",
+    "create_model",
+    "make_mlp",
+    "EvaluationConfig",
+    "EvaluationMetrics",
+    "EvaluationVisualizer",
+    "ModelEvaluator",
+    "ReportGenerator",
+    "evaluate_all_registered_models",
 ]
